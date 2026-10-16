@@ -64,6 +64,9 @@ pub struct Installed {
     pub version: String,
     /// Where the build came from: `bird` or `static-php`.
     pub source: String,
+    /// Which build of `version` (the sha256 of its cli archive), for Bird's
+    /// builds; a rebuild with more extensions keeps the PHP version.
+    pub build: Option<String>,
 }
 
 pub fn installed() -> Vec<Installed> {
@@ -86,10 +89,12 @@ pub fn installed() -> Vec<Installed> {
             let version = read("VERSION").unwrap_or_else(|| minor.clone());
             // Installs from before Bird had its own builds have no SOURCE file.
             let source = read("SOURCE").unwrap_or_else(|| SOURCE_STATIC_PHP.into());
+            let build = read("BUILD");
             Some(Installed {
                 minor,
                 version,
                 source,
+                build,
             })
         })
         .collect();
@@ -215,15 +220,63 @@ fn fetch_manifest(base: &str) -> Result<Manifest> {
     Ok(manifest)
 }
 
+#[derive(Debug, Clone)]
+pub struct Remote {
+    /// `8.4.26`
+    pub version: String,
+    /// Build id (cli archive sha256), when the mirror has a manifest.
+    pub build: Option<String>,
+}
+
 /// Latest available patch release per minor version on the mirror.
 pub fn available(cfg: &Config) -> Result<BTreeMap<String, String>> {
+    Ok(available_builds(cfg)?
+        .into_iter()
+        .map(|(minor, r)| (minor, r.version))
+        .collect())
+}
+
+/// Like `available`, with the build id of each latest release.
+pub fn available_builds(cfg: &Config) -> Result<BTreeMap<String, Remote>> {
     match mirror(cfg) {
-        Mirror::Manifest(base) => Ok(fetch_manifest(base)?
-            .latest
+        Mirror::Manifest(base) => {
+            let manifest = fetch_manifest(base)?;
+            Ok(manifest
+                .latest
+                .iter()
+                .filter_map(|(minor, platforms)| {
+                    let version = platforms.get(platform())?.clone();
+                    let build = manifest
+                        .builds
+                        .iter()
+                        .find(|b| b.version == version && b.platform == platform())
+                        .map(|b| b.cli.sha256.to_ascii_lowercase());
+                    Some((minor.clone(), Remote { version, build }))
+                })
+                .collect())
+        }
+        Mirror::StaticPhp(base) => Ok(static_php_available(base)?
             .into_iter()
-            .filter_map(|(minor, platforms)| Some((minor, platforms.get(platform())?.clone())))
+            .map(|(minor, version)| {
+                (
+                    minor,
+                    Remote {
+                        version,
+                        build: None,
+                    },
+                )
+            })
             .collect()),
-        Mirror::StaticPhp(base) => static_php_available(base),
+    }
+}
+
+impl Installed {
+    /// Whether `remote` is a different build than this install: another
+    /// version, another source, or a rebuild of the same version.
+    pub fn outdated(&self, remote: &Remote, mirror_source: &str) -> bool {
+        self.version != remote.version
+            || self.source != mirror_source
+            || (remote.build.is_some() && self.build != remote.build)
     }
 }
 
@@ -294,7 +347,7 @@ pub fn install(cfg: &Config, minor: &str) -> Result<String> {
 
 fn install_into(cfg: &Config, minor: &str, dir: &Path) -> Result<String> {
     let bin = dir.join("bin");
-    let (full, source) = match mirror(cfg) {
+    let (full, source, build_id) = match mirror(cfg) {
         Mirror::Manifest(base) => {
             let manifest = fetch_manifest(base)?;
             let full = manifest
@@ -331,7 +384,11 @@ fn install_into(cfg: &Config, minor: &str, dir: &Path) -> Result<String> {
                 let so = format!("{ext}.so");
                 extract_binary(&archive, &so, &modules.join(&so))?;
             }
-            (full, SOURCE_BIRD)
+            (
+                full,
+                SOURCE_BIRD,
+                Some(build.cli.sha256.to_ascii_lowercase()),
+            )
         }
         Mirror::StaticPhp(base) => {
             let available = static_php_available(base)?;
@@ -346,12 +403,18 @@ fn install_into(cfg: &Config, minor: &str, dir: &Path) -> Result<String> {
                 extract_binary(&archive, binary, &bin.join(binary))
                     .with_context(|| format!("could not extract {binary} from {url}"))?;
             }
-            (full, SOURCE_STATIC_PHP)
+            (full, SOURCE_STATIC_PHP, None)
         }
     };
     write_managed_ini(minor, cfg.opcache)?;
     std::fs::write(dir.join("VERSION"), format!("{full}\n"))?;
     std::fs::write(dir.join("SOURCE"), format!("{source}\n"))?;
+    match build_id {
+        Some(id) => std::fs::write(dir.join("BUILD"), format!("{id}\n"))?,
+        None => {
+            let _ = std::fs::remove_file(dir.join("BUILD"));
+        }
+    }
     let ini = paths().php_ini(minor);
     if !ini.exists() {
         std::fs::write(&ini, default_ini(minor))?;
@@ -666,6 +729,40 @@ mod tests {
         assert!(on.contains("opcache.validate_timestamps = 1"));
         assert!(on.contains("opcache.revalidate_freq = 0"));
         assert!(managed_ini(false).contains("opcache.enable = 0"));
+    }
+
+    #[test]
+    fn detects_outdated_installs() {
+        let inst = |version: &str, source: &str, build: Option<&str>| Installed {
+            minor: "8.5".into(),
+            version: version.into(),
+            source: source.into(),
+            build: build.map(String::from),
+        };
+        let remote = Remote {
+            version: "8.5.11".into(),
+            build: Some("abc".into()),
+        };
+        assert!(!inst("8.5.11", SOURCE_BIRD, Some("abc")).outdated(&remote, SOURCE_BIRD));
+        assert!(
+            inst("8.5.11", SOURCE_BIRD, Some("old")).outdated(&remote, SOURCE_BIRD),
+            "rebuild"
+        );
+        assert!(
+            inst("8.5.8", SOURCE_STATIC_PHP, None).outdated(&remote, SOURCE_BIRD),
+            "static-php"
+        );
+        assert!(
+            inst("8.5.10", SOURCE_BIRD, Some("abc")).outdated(&remote, SOURCE_BIRD),
+            "patch"
+        );
+        let static_remote = Remote {
+            version: "8.5.11".into(),
+            build: None,
+        };
+        assert!(
+            !inst("8.5.11", SOURCE_STATIC_PHP, None).outdated(&static_remote, SOURCE_STATIC_PHP)
+        );
     }
 
     #[test]

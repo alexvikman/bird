@@ -700,7 +700,7 @@ fn php_list(available: bool) -> Result<()> {
     let cfg = Config::load()?;
     let installed = php::installed();
     let remote = if available {
-        Some(php::available(&cfg)?)
+        Some(php::available_builds(&cfg)?)
     } else {
         None
     };
@@ -736,18 +736,19 @@ fn php_list(available: bool) -> Result<()> {
             };
             let mut row = vec![v.clone(), version, marker];
             if let Some(r) = &remote {
-                let latest = r.get(v).cloned().unwrap_or_default();
-                let update = match inst {
-                    Some(i) if !latest.is_empty() && i.version != latest => {
-                        yellow(&format!("{latest} available"))
+                let source = php::mirror_source(&cfg);
+                let update = match (inst, r.get(v)) {
+                    (Some(i), Some(latest)) if i.version != latest.version => {
+                        yellow(&format!("{} available", latest.version))
                     }
-                    Some(i) if !latest.is_empty() && i.source != php::mirror_source(&cfg) => {
-                        yellow(&format!(
-                            "{latest} ({}) available",
-                            php::mirror_source(&cfg)
-                        ))
+                    (Some(i), Some(latest)) if i.source != source => {
+                        yellow(&format!("{} ({source}) available", latest.version))
                     }
-                    _ => dim(&latest),
+                    (Some(i), Some(latest)) if i.outdated(latest, source) => {
+                        yellow(&format!("{} (new build) available", latest.version))
+                    }
+                    (_, Some(latest)) => dim(&latest.version),
+                    (_, None) => String::new(),
                 };
                 row.push(update);
             }
@@ -772,7 +773,7 @@ fn php_update(versions: &[String]) -> Result<()> {
             .map(|v| php::require_normalized(v))
             .collect::<Result<_>>()?
     };
-    let remote = php::available(&cfg)?;
+    let remote = php::available_builds(&cfg)?;
     let installed = php::installed();
     let mut updated = Vec::new();
     for v in targets {
@@ -781,18 +782,19 @@ fn php_update(versions: &[String]) -> Result<()> {
             continue;
         };
         let current = &inst.version;
-        // A build from another source (e.g. static-php from Bird 0.1) is
-        // replaced even at the same version: Bird's builds have opcache etc.
-        let other_source = inst.source != php::mirror_source(&cfg);
+        let source = php::mirror_source(&cfg);
         match remote.get(&v) {
-            Some(latest) if latest != current || other_source => {
+            // Also replaces static-php builds from Bird 0.1, and rebuilds of the
+            // same version (e.g. with more extensions).
+            Some(latest) if inst.outdated(latest, source) => {
                 let full = php::install(&cfg, &v)?;
-                if other_source {
+                if inst.source != source {
                     ui::ok(format!(
-                        "PHP {current} ({}) → {full} ({})",
-                        inst.source,
-                        php::mirror_source(&cfg)
+                        "PHP {current} ({}) → {full} ({source})",
+                        inst.source
                     ));
+                } else if *current == full {
+                    ui::ok(format!("PHP {full}: installed the new build"));
                 } else {
                     ui::ok(format!("PHP {current} → {full}"));
                 }
