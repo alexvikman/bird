@@ -1,0 +1,151 @@
+# Builds Bird's PHP binaries (php + php-fpm + shared extensions) with
+# static-php-cli and publishes them to the rolling `php` GitHub Release,
+# together with manifest.json. See php-builds/README.md.
+name: PHP builds
+
+on:
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: PHP versions, comma separated (8.4 = latest 8.4.x, or an exact 8.4.26)
+        type: string
+        default: "8.1,8.2,8.3,8.4,8.5"
+      platforms:
+        description: Platforms, comma separated
+        type: string
+        default: "macos-aarch64,macos-x86_64"
+      prebuilt-libs:
+        description: Use spc's pre-built static libraries (faster, but trusts spc's binaries)
+        type: boolean
+        default: false
+      publish:
+        description: Upload to the `php` release and update manifest.json
+        type: boolean
+        default: false
+  # TODO: a weekly run that picks up new patch releases. It needs a check that
+  # skips versions already in manifest.json before it can publish unattended.
+  # schedule:
+  #   - cron: "0 4 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_TAG: php
+
+jobs:
+  plan:
+    name: Resolve versions
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - id: plan
+        env:
+          VERSIONS: ${{ inputs.versions }}
+          PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          versions="$(python3 php-builds/manifest.py resolve "$VERSIONS")"
+          # TODO(linux): linux-x86_64 / linux-aarch64 (ubuntu-24.04, ubuntu-24.04-arm),
+          # once build.sh supports spc's Docker builds.
+          matrix="$(jq -cn --argjson versions "$versions" --arg platforms "$PLATFORMS" '
+            {"macos-aarch64": "macos-15", "macos-x86_64": "macos-15-intel"} as $runners
+            | ($platforms | split(",") | map(gsub("\\s"; "")) | map(select(. != ""))) as $platforms
+            | ($platforms - ($runners | keys)) as $unknown
+            | if ($unknown | length) > 0 then error("unknown platform(s): \($unknown | join(", "))") else . end
+            | {include: [$versions[] as $php | $platforms[] as $platform
+                | {php: $php, platform: $platform, runner: $runners[$platform]}]}')"
+          echo "$matrix" | jq .
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: PHP ${{ matrix.php }} (${{ matrix.platform }})
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Cache source downloads
+        uses: actions/cache@v6
+        with:
+          path: php-builds/.work/${{ matrix.platform }}/${{ matrix.php }}/downloads
+          key: spc-downloads-${{ matrix.platform }}-${{ matrix.php }}-${{ hashFiles('php-builds/build.sh', 'php-builds/*.txt') }}
+          restore-keys: spc-downloads-${{ matrix.platform }}-${{ matrix.php }}-
+
+      - name: Build
+        env:
+          PHP_VERSION: ${{ matrix.php }}
+          SPC_PREBUILT: ${{ inputs.prebuilt-libs && '1' || '' }}
+          # Higher GitHub API rate limit for spc's downloads from GitHub.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: php-builds/build.sh "$PHP_VERSION" --out dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: php-${{ matrix.php }}-${{ matrix.platform }}
+          path: dist/
+          if-no-files-found: error
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs-php-${{ matrix.php }}-${{ matrix.platform }}
+          path: php-builds/.work/${{ matrix.platform }}/${{ matrix.php }}/log/
+          if-no-files-found: ignore
+
+  publish:
+    name: Publish release
+    needs: build
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: php-builds-publish
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: php-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create the release if missing
+        run: |
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --latest=false --title "PHP builds" \
+              --notes "PHP binaries for Bird, built by .github/workflows/php-builds.yml. See manifest.json."
+          fi
+
+      - name: Merge manifest.json
+        run: |
+          mkdir -p previous
+          if gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | grep -qx manifest.json; then
+            gh release download "$RELEASE_TAG" --pattern manifest.json --dir previous
+          fi
+          python3 php-builds/manifest.py merge --existing previous/manifest.json --out dist/manifest.json dist/php-*.json
+          cat dist/manifest.json
+
+      - name: Upload assets
+        run: |
+          # Archives first, so the manifest never points at missing files.
+          gh release upload "$RELEASE_TAG" dist/*.tar.gz --clobber
+          gh release upload "$RELEASE_TAG" dist/manifest.json --clobber

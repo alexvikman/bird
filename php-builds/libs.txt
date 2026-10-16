@@ -1,0 +1,5 @@
+# Optional libraries to link in addition to what the extensions require.
+# gd: JPEG, WebP and FreeType support (PNG is always included).
+freetype
+libjpeg
+libwebp

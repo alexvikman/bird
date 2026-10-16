@@ -1,0 +1,7 @@
+# Pinned sources, passed to `spc download -U <name>:<url>`.
+# Without these spc takes whatever is newest, which for Xdebug (from Packagist)
+# can be an alpha and for igbinary (PECL "stable") an RC.
+# Format: <spc source name> <url>
+xdebug   https://pecl.php.net/get/xdebug-3.5.3.tgz
+redis    https://pecl.php.net/get/redis-6.3.0.tgz
+igbinary https://pecl.php.net/get/igbinary-3.2.16.tgz
