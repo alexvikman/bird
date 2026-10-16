@@ -326,6 +326,42 @@ pub fn system_install(user: &str, group: &str, home: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A new directory with an unpredictable name that only the current user
+/// can access (mkdtemp creates it 0700), deleted again on drop.
+struct PrivateTempDir(PathBuf);
+
+impl PrivateTempDir {
+    fn new() -> std::io::Result<Self> {
+        let mut template = b"/tmp/bird-XXXXXXXX\0".to_vec();
+        let ptr = unsafe { libc::mkdtemp(template.as_mut_ptr().cast()) };
+        if ptr.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        template.pop(); // trailing NUL
+        let path = String::from_utf8(template).map_err(std::io::Error::other)?;
+        Ok(Self(PathBuf::from(path)))
+    }
+
+    fn write(&self, name: &str, contents: &[u8]) -> std::io::Result<PathBuf> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = self.0.join(name);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&path)?;
+        file.write_all(contents)?;
+        Ok(path)
+    }
+}
+
+impl Drop for PrivateTempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Removes trust settings and keychain entries for this user's Bird CAs,
 /// except the one with fingerprint `keep`. Returns how many were removed.
 fn remove_cas(common_name: &str, keep: Option<&str>) -> usize {
@@ -360,13 +396,16 @@ fn remove_cas(common_name: &str, keep: Option<&str>) -> usize {
             continue;
         }
         // Trust settings outlive the keychain item, so remove them explicitly.
-        let tmp = std::env::temp_dir().join(format!("bird-old-ca-{fingerprint}.pem"));
-        if std::fs::write(&tmp, pem).is_ok() {
+        // This runs as root: never write to a predictable path in a shared dir.
+        let written = PrivateTempDir::new().and_then(|dir| {
+            let file = dir.write("old-ca.pem", pem.as_bytes())?;
+            Ok((dir, file))
+        });
+        if let Ok((_dir, file)) = written {
             let _ = Command::new("security")
                 .args(["remove-trusted-cert", "-d"])
-                .arg(&tmp)
+                .arg(&file)
                 .output();
-            let _ = std::fs::remove_file(&tmp);
         }
         let deleted = Command::new("security")
             .args(["delete-certificate", "-Z", &fingerprint, SYSTEM_KEYCHAIN])
@@ -644,6 +683,26 @@ fn dns_works(cfg: &Config) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_temp_dir_is_owner_only_and_cleaned_up() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = PrivateTempDir::new().unwrap();
+        let root = dir.0.clone();
+        assert_eq!(
+            std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let file = dir.write("x.pem", b"hello").unwrap();
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(dir.write("x.pem", b"again").is_err(), "must not overwrite");
+        assert_ne!(PrivateTempDir::new().unwrap().0, root, "names must differ");
+        drop(dir);
+        assert!(!root.exists());
+    }
 
     #[test]
     fn launchd_plist_is_valid() {
