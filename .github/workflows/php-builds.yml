@@ -1,6 +1,11 @@
 # Builds Bird's PHP binaries (php + php-fpm + shared extensions) with
 # static-php-cli and publishes them to the rolling `php` GitHub Release,
 # together with manifest.json. See php-builds/README.md.
+#
+# Hardening: runs only on manual dispatch (never on pull requests), the token
+# is read-only except in the publish job, inputs reach shells only through env,
+# checkout keeps no credentials, and every action is pinned to a commit SHA
+# (Dependabot keeps the pins current).
 name: PHP builds
 
 on:
@@ -40,7 +45,7 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -71,12 +76,12 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Cache source downloads
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: php-builds/.work/${{ matrix.platform }}/${{ matrix.php }}/downloads
           key: spc-downloads-${{ matrix.platform }}-${{ matrix.php }}-${{ hashFiles('php-builds/build.sh', 'php-builds/*.txt') }}
@@ -90,7 +95,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: php-builds/build.sh "$PHP_VERSION" --out dist
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: php-${{ matrix.php }}-${{ matrix.platform }}
           path: dist/
@@ -98,7 +103,7 @@ jobs:
 
       - name: Upload build logs
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: logs-php-${{ matrix.php }}-${{ matrix.platform }}
           path: php-builds/.work/${{ matrix.platform }}/${{ matrix.php }}/log/
@@ -118,11 +123,11 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: php-*
           path: dist

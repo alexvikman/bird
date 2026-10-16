@@ -248,8 +248,11 @@ fn extract_binary(archive: &[u8], name: &str, dest: &Path) -> Result<()> {
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
     for entry in tar.entries()? {
         let mut entry = entry?;
+        // Only a regular file at the archive root counts; archives also carry
+        // a licenses/ directory, and nothing else may pose as the binary.
         let path = entry.path()?.to_path_buf();
-        if path.file_name().and_then(|f| f.to_str()) != Some(name) {
+        let path = path.strip_prefix("./").unwrap_or(&path);
+        if path != Path::new(name) || !entry.header().entry_type().is_file() {
             continue;
         }
         // Write next to the destination and rename, so running processes keep
@@ -302,6 +305,43 @@ fn default_ini(minor: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tarball(entries: &[(&str, tar::EntryType, &[u8])]) -> Vec<u8> {
+        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::fast(),
+        ));
+        for (path, kind, data) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(*kind);
+            header.set_size(data.len() as u64);
+            header.set_mode(0o755);
+            builder.append_data(&mut header, path, *data).unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[test]
+    fn extracts_only_the_root_binary() {
+        let dir = std::env::temp_dir().join(format!("bird-extract-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("php");
+        let archive = tarball(&[
+            ("licenses/php", tar::EntryType::Regular, b"not me"),
+            ("php", tar::EntryType::Regular, b"the binary"),
+            (
+                "licenses/src_php-src_0.txt",
+                tar::EntryType::Regular,
+                b"license",
+            ),
+        ]);
+        extract_binary(&archive, "php", &dest).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"the binary");
+
+        let only_nested = tarball(&[("evil/php", tar::EntryType::Regular, b"x")]);
+        assert!(extract_binary(&only_nested, "php", &dest).is_err());
+        std::fs::remove_dir_all(dir).ok();
+    }
 
     #[test]
     fn normalizes_versions() {

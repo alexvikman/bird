@@ -1,1 +1,8 @@
 /target
+
+# Never commit keys or local secrets (Bird's own CA lives in ~/.bird, not here).
+*.pem
+*.key
+*.p12
+.env
+.env.*

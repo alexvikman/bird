@@ -1,0 +1,13 @@
+# Keeps the SHA-pinned GitHub Actions current. Dependabot PRs cannot trigger
+# the build workflow (it only runs on manual dispatch).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

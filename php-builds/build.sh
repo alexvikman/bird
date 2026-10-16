@@ -3,7 +3,7 @@
 # plus the shared extensions in shared-extensions.txt, and packages them the
 # way Bird's installer expects:
 #
-#   php-<full>-cli-<platform>.tar.gz      -> php        (at the archive root)
+#   php-<full>-cli-<platform>.tar.gz      -> php        (at the archive root, plus licenses/)
 #   php-<full>-fpm-<platform>.tar.gz      -> php-fpm
 #   php-<full>-<ext>-<platform>.tar.gz    -> <ext>.so   (one per shared extension)
 #   php-<full>-<platform>.json            -> build metadata, merged by manifest.py
@@ -20,6 +20,16 @@
 set -euo pipefail
 
 SPC_VERSION="${SPC_VERSION:-2.8.5}"
+
+# sha256 of the spc release assets we run. A different SPC_VERSION needs its
+# own entry here (or SPC_SHA256 in the environment); nothing unverified runs.
+spc_sha256() {
+    case "$SPC_VERSION/$1" in
+        2.8.5/spc-macos-aarch64.tar.gz) echo acf2f25d56d0cbf8e65aa82e5054fef555f7be7c5c38046c6e0819f266d83225 ;;
+        2.8.5/spc-macos-x86_64.tar.gz)  echo e8b798048f62ca4960764196543b60ae703f7174aa418824cf542aeec1d2cd6a ;;
+        *) echo "${SPC_SHA256:-}" ;;
+    esac
+}
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 work="${BIRD_BUILD_WORK:-$here/.work}"
@@ -82,6 +92,10 @@ if [ ! -x "$spc" ]; then
     mkdir -p "$spc_dir"
     curl -fsSL --retry 3 -o "$spc_dir/spc.tar.gz" \
         "https://github.com/crazywhalecc/static-php-cli/releases/download/$SPC_VERSION/$spc_asset"
+    expected="$(spc_sha256 "$spc_asset")"
+    [ -n "$expected" ] || { rm -rf "$spc_dir"; die "no pinned sha256 for spc $SPC_VERSION ($spc_asset); add it to build.sh"; }
+    echo "$expected  $spc_dir/spc.tar.gz" | shasum -a 256 -c - >/dev/null ||
+        { rm -rf "$spc_dir"; die "spc $SPC_VERSION ($spc_asset) does not match its pinned sha256"; }
     tar -xzf "$spc_dir/spc.tar.gz" -C "$spc_dir"
     rm "$spc_dir/spc.tar.gz"
     [ -x "$spc" ] || die "spc binary not found in $spc_asset"
@@ -103,12 +117,56 @@ log "spc doctor"
 
 log "Downloading sources"
 download_flags=(--retry=3)
-while read -r name url; do
-    [ -n "$name" ] && download_flags+=(-U "$name:$url")
+while read -r name url sha; do
+    [ -n "$name" ] || continue
+    [ -n "$sha" ] || die "sources.txt: $name has no sha256"
+    download_flags+=(-U "$name:$url")
 done < <(sed -e 's/#.*//' "$here/sources.txt" | grep -v '^[[:space:]]*$')
 [ "${SPC_PREBUILT:-}" = "1" ] && download_flags+=(--prefer-pre-built)
 "$spc" download --with-php="$full" --for-extensions="$all_exts" --for-libs="$libs" \
     --ignore-cache-sources=php-src "${download_flags[@]}" ${spc_flags[@]+"${spc_flags[@]}"}
+
+# spc does not verify what it downloads. Check what we can before building:
+# php-src against the sha256 php.net publishes, pinned sources against
+# sources.txt. (The libraries spc fetches from their upstreams over HTTPS are
+# trusted as spc configures them.)
+log "Verifying sources"
+release_json="$(curl -fsSL "https://www.php.net/releases/index.php?json&version=$full")"
+python3 -I - "$build_dir/downloads" "$here/sources.txt" "$release_json" <<'PY'
+import hashlib, json, os, sys
+
+downloads, sources_txt, release_json = sys.argv[1:4]
+lock = json.load(open(os.path.join(downloads, ".lock.json")))
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def check(name, expected):
+    entry = lock.get(name)
+    if not entry or not entry.get("filename"):
+        sys.exit(f"error: {name} was not downloaded as an archive; cannot verify it")
+    path = os.path.join(downloads, entry["filename"])
+    actual = sha256(path)
+    if actual != expected:
+        sys.exit(f"error: {entry['filename']} has sha256 {actual}, expected {expected}")
+    print(f"  ok  {entry['filename']}")
+
+published = {s["filename"]: s["sha256"] for s in json.loads(release_json).get("source", [])}
+php_file = lock.get("php-src", {}).get("filename", "")
+if php_file not in published:
+    sys.exit(f"error: php.net publishes no sha256 for {php_file!r}")
+check("php-src", published[php_file])
+
+for line in open(sources_txt):
+    fields = line.split("#", 1)[0].split()
+    if fields:
+        name, _url, expected = fields
+        check(name, expected)
+PY
 
 log "Building"
 build_flags=(--build-cli --build-fpm --with-libs="$libs")
@@ -178,8 +236,22 @@ log "Packaging into $out"
 mkdir -p "$out"
 export COPYFILE_DISABLE=1 # no ._ AppleDouble files in the archives
 
+# PHP, its extensions and the bundled libraries require their licenses to
+# ship with the binaries; every archive carries them in licenses/.
+licenses="$build_dir/licenses-bundle"
+rm -rf "$licenses" && mkdir -p "$licenses/licenses"
+# dump-license honours only one of --for-extensions/--for-libs per call and
+# empties its target directory, so dump twice and merge.
+"$spc" dump-license --for-extensions="$all_exts" --dump-dir="$licenses/licenses" >/dev/null
+if [ -n "$libs" ]; then
+    "$spc" dump-license --for-libs="$libs" --without-php --dump-dir="$licenses/libs" >/dev/null
+    cp -n "$licenses/libs/"* "$licenses/licenses/"
+    rm -rf "$licenses/libs"
+fi
+[ -f "$licenses/licenses/src_php-src_0.txt" ] || die "license dump is missing PHP's license"
+
 pack() { # <archive name> <dir> <file>
-    tar --uid 0 --gid 0 --numeric-owner -czf "$out/$1" -C "$2" "$3"
+    tar --uid 0 --gid 0 --numeric-owner -czf "$out/$1" -C "$2" "$3" -C "$licenses" licenses
 }
 pack "php-$full-cli-$platform.tar.gz" "$build_dir/buildroot/bin" php
 pack "php-$full-fpm-$platform.tar.gz" "$build_dir/buildroot/bin" php-fpm

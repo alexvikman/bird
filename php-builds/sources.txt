@@ -1,7 +1,8 @@
-# Pinned sources, passed to `spc download -U <name>:<url>`.
+# Pinned sources, passed to `spc download -U <name>:<url>` and verified
+# against the sha256 after download (build.sh aborts on a mismatch).
 # Without these spc takes whatever is newest, which for Xdebug (from Packagist)
 # can be an alpha and for igbinary (PECL "stable") an RC.
-# Format: <spc source name> <url>
-xdebug   https://pecl.php.net/get/xdebug-3.5.3.tgz
-redis    https://pecl.php.net/get/redis-6.3.0.tgz
-igbinary https://pecl.php.net/get/igbinary-3.2.16.tgz
+# Format: <spc source name> <url> <sha256>
+xdebug   https://pecl.php.net/get/xdebug-3.5.3.tgz   f073de91bea046106abf4d6071c963ea71e58571df6ce58948ceca89d121cb2d
+redis    https://pecl.php.net/get/redis-6.3.0.tgz    0d5141f634bd1db6c1ddcda053d25ecf2c4fc1c395430d534fd3f8d51dd7f0b5
+igbinary https://pecl.php.net/get/igbinary-3.2.16.tgz 8bf25d465abc7973d9e2c9a3039a5f8eea635b23bc1477017ff3999ff95836da
