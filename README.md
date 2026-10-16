@@ -15,7 +15,7 @@ cd my-app && bird isolate 8.3
 |---|---|
 | DNS | Built-in DNS server on `127.0.0.1:53535`; `/etc/resolver/test` points macOS at it. No dnsmasq. |
 | Web server | Built-in HTTP/1.1 + HTTP/2 server (hyper + rustls). Static files are served directly, PHP goes to PHP-FPM over FastCGI. No nginx, no config to regenerate. |
-| HTTPS | A local CA (trusted once at install) issues a certificate the first time a hostname is requested. Every site and subdomain works over HTTPS. |
+| HTTPS | A local CA (trusted once at install) issues a certificate the first time a hostname is requested. Every site and subdomain works over HTTPS. The CA is name-constrained to the TLD (and no IP addresses), so even a leaked key can't impersonate real domains; `bird tld` replaces it. |
 | Ports 80/443 | launchd binds them as root and hands the sockets to the daemon, which runs as you. No privileged helper stays running. |
 | PHP | Static builds from [static-php-cli](https://static-php.dev) in `~/.bird/php/<version>`. One FPM pool per version, started on first request and stopped when idle. |
 | CLI | `~/.bird/bin/php`, `php8.4` and `composer` are shims that pick the same PHP version the site is served with. |

@@ -104,8 +104,8 @@ pub fn run(http_port: Option<u16>, https_port: Option<u16>) -> Result<()> {
 
 async fn main(http_port: Option<u16>, https_port: Option<u16>) -> Result<()> {
     paths().ensure_dirs()?;
-    tls::ensure_ca()?;
     let mut cfg = Config::load()?;
+    tls::ensure_ca_exists(&cfg.tld)?;
     if let Some(p) = http_port {
         cfg.http_port = p;
     }

@@ -814,9 +814,15 @@ fn set_tld(tld: Option<String>) -> Result<()> {
     cfg.tld = tld.clone();
     cfg.save()?;
     ui::ok(format!("sites are now served as <name>.{tld}"));
+    // The CA is name-constrained to the TLD, so a new TLD needs a new CA.
+    let replaced = crate::tls::ensure_ca(&tld)? != crate::tls::CaStatus::Existing;
     if install::is_system_installed() {
-        println!("Updating /etc/resolver (needs sudo)…");
+        println!("Updating /etc/resolver and the trusted CA (needs sudo)…");
         install::sudo_system_install()?;
+    } else if replaced {
+        ui::warn(format!(
+            "made a new CA for *.{tld}; restart the daemon and run `bird install` to trust it"
+        ));
     }
     Ok(())
 }

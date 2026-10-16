@@ -60,8 +60,17 @@ pub fn install(user_only: bool, php_version: Option<String>) -> Result<()> {
 
     let mut cfg = Config::load()?;
     cfg.save()?;
-    if tls::ensure_ca()? {
-        ui::ok("created a local certificate authority");
+    let ca_status = tls::ensure_ca(&cfg.tld)?;
+    match ca_status {
+        tls::CaStatus::Created => ui::ok(format!(
+            "created a local certificate authority for *.{}",
+            cfg.tld
+        )),
+        tls::CaStatus::Replaced => ui::ok(format!(
+            "replaced the certificate authority with one limited to *.{}",
+            cfg.tld
+        )),
+        tls::CaStatus::Existing => {}
     }
 
     if php::installed().is_empty() {
@@ -100,6 +109,11 @@ pub fn install(user_only: bool, php_version: Option<String>) -> Result<()> {
         .open(p.daemon_log())?;
 
     if user_only {
+        if ca_status == tls::CaStatus::Replaced {
+            ui::warn(
+                "restart the daemon and run `bird install` (without --user-only) to trust the new CA",
+            );
+        }
         ui::ok("user setup done; run `bird daemon --http-port 8080 --https-port 8443` to try it");
     } else {
         println!(
@@ -297,7 +311,72 @@ pub fn system_install(user: &str, group: &str, home: &Path) -> Result<()> {
             ui::warn("could not trust the CA; HTTPS will show certificate warnings until you do");
         }
     }
+    // Drop CAs from earlier installs (other TLD, or made before name constraints).
+    if let Ok(pem) = std::fs::read_to_string(&ca)
+        && let (Some(cn), Some(current)) = (tls::common_name(&pem), tls::sha1_fingerprint(&pem))
+    {
+        let removed = remove_cas(&cn, Some(&current));
+        if removed > 0 {
+            ui::ok(format!(
+                "removed {removed} old certificate authorit{} from the system keychain",
+                if removed == 1 { "y" } else { "ies" }
+            ));
+        }
+    }
     Ok(())
+}
+
+/// Removes trust settings and keychain entries for this user's Bird CAs,
+/// except the one with fingerprint `keep`. Returns how many were removed.
+fn remove_cas(common_name: &str, keep: Option<&str>) -> usize {
+    let Ok(out) = Command::new("security")
+        .args([
+            "find-certificate",
+            "-a",
+            "-c",
+            common_name,
+            "-p",
+            SYSTEM_KEYCHAIN,
+        ])
+        .output()
+    else {
+        return 0;
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut removed = 0;
+    for block in text.split_inclusive("-----END CERTIFICATE-----\n") {
+        let Some(begin) = block.find("-----BEGIN CERTIFICATE-----") else {
+            continue;
+        };
+        let pem = &block[begin..];
+        // `-c` matches substrings; only touch exact matches.
+        if tls::common_name(pem).as_deref() != Some(common_name) {
+            continue;
+        }
+        let Some(fingerprint) = tls::sha1_fingerprint(pem) else {
+            continue;
+        };
+        if keep == Some(fingerprint.as_str()) {
+            continue;
+        }
+        // Trust settings outlive the keychain item, so remove them explicitly.
+        let tmp = std::env::temp_dir().join(format!("bird-old-ca-{fingerprint}.pem"));
+        if std::fs::write(&tmp, pem).is_ok() {
+            let _ = Command::new("security")
+                .args(["remove-trusted-cert", "-d"])
+                .arg(&tmp)
+                .output();
+            let _ = std::fs::remove_file(&tmp);
+        }
+        let deleted = Command::new("security")
+            .args(["delete-certificate", "-Z", &fingerprint, SYSTEM_KEYCHAIN])
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if deleted {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 fn ca_trusted() -> bool {
@@ -362,14 +441,10 @@ pub fn system_uninstall(ca_name: Option<&str>) -> Result<()> {
             .arg(&ca)
             .status();
     }
-    if let Some(name) = ca_name {
-        let deleted = Command::new("security")
-            .args(["delete-certificate", "-c", name, SYSTEM_KEYCHAIN])
-            .output()
-            .is_ok_and(|o| o.status.success());
-        if deleted {
-            ui::ok("removed the certificate authority from the system keychain");
-        }
+    if let Some(name) = ca_name
+        && remove_cas(name, None) > 0
+    {
+        ui::ok("removed the certificate authority from the system keychain");
     }
     Ok(())
 }
