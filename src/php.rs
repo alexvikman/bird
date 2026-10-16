@@ -1,5 +1,9 @@
-//! PHP versions: naming, resolution per directory, and installation from a
-//! static-php-cli distribution.
+//! PHP versions: naming, resolution per directory, and installation.
+//!
+//! PHP comes from Bird's own builds (php-builds/, published as the `php`
+//! GitHub release with a `manifest.json` carrying sha256 sums). A
+//! dl.static-php.dev distribution still works as `php_mirror`, without
+//! checksums and with fewer extensions.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -58,6 +62,8 @@ pub struct Installed {
     pub minor: String,
     /// `8.4.23`
     pub version: String,
+    /// Where the build came from: `bird` or `static-php`.
+    pub source: String,
 }
 
 pub fn installed() -> Vec<Installed> {
@@ -72,10 +78,19 @@ pub fn installed() -> Vec<Installed> {
             if !paths().php_binary(&minor).is_file() {
                 return None;
             }
-            let version = std::fs::read_to_string(e.path().join("VERSION"))
-                .map(|s| s.trim().to_string())
-                .unwrap_or_else(|_| minor.clone());
-            Some(Installed { minor, version })
+            let read = |file: &str| {
+                std::fs::read_to_string(e.path().join(file))
+                    .ok()
+                    .map(|s| s.trim().to_string())
+            };
+            let version = read("VERSION").unwrap_or_else(|| minor.clone());
+            // Installs from before Bird had its own builds have no SOURCE file.
+            let source = read("SOURCE").unwrap_or_else(|| SOURCE_STATIC_PHP.into());
+            Some(Installed {
+                minor,
+                version,
+                source,
+            })
         })
         .collect();
     out.sort_by_key(|i| version_key(&i.minor));
@@ -120,9 +135,32 @@ fn platform() -> &'static str {
     }
 }
 
-#[derive(Deserialize)]
-struct MirrorEntry {
-    name: String,
+pub const DEFAULT_MIRROR: &str = "https://github.com/alexvikman/bird/releases/download/php";
+pub const SOURCE_BIRD: &str = "bird";
+pub const SOURCE_STATIC_PHP: &str = "static-php";
+
+enum Mirror<'a> {
+    /// Bird's own builds: `<base>/manifest.json` plus the archives next to it.
+    Manifest(&'a str),
+    /// A dl.static-php.dev distribution (directory listing, no checksums).
+    StaticPhp(&'a str),
+}
+
+fn mirror(cfg: &Config) -> Mirror<'_> {
+    let base = cfg.php_mirror.trim_end_matches('/');
+    if base.contains("dl.static-php.dev") {
+        Mirror::StaticPhp(base)
+    } else {
+        Mirror::Manifest(base)
+    }
+}
+
+/// `bird` or `static-php`, depending on `php_mirror`.
+pub fn mirror_source(cfg: &Config) -> &'static str {
+    match mirror(cfg) {
+        Mirror::Manifest(_) => SOURCE_BIRD,
+        Mirror::StaticPhp(_) => SOURCE_STATIC_PHP,
+    }
 }
 
 fn http() -> Result<reqwest::blocking::Client> {
@@ -131,9 +169,71 @@ fn http() -> Result<reqwest::blocking::Client> {
         .build()?)
 }
 
+const MANIFEST_SCHEMA: u32 = 1;
+
+#[derive(Deserialize)]
+struct Manifest {
+    schema: u32,
+    #[serde(default)]
+    latest: BTreeMap<String, BTreeMap<String, String>>,
+    #[serde(default)]
+    builds: Vec<Build>,
+}
+
+#[derive(Deserialize)]
+struct Build {
+    version: String,
+    platform: String,
+    cli: Asset,
+    fpm: Asset,
+    #[serde(default)]
+    shared_extensions: BTreeMap<String, Asset>,
+}
+
+#[derive(Deserialize)]
+struct Asset {
+    file: String,
+    sha256: String,
+    size: u64,
+}
+
+fn fetch_manifest(base: &str) -> Result<Manifest> {
+    let url = format!("{base}/manifest.json");
+    let manifest: Manifest = http()?
+        .get(&url)
+        .send()
+        .and_then(|r| r.error_for_status())
+        .with_context(|| format!("could not fetch {url}"))?
+        .json()
+        .with_context(|| format!("{url} is not a valid PHP manifest"))?;
+    if manifest.schema != MANIFEST_SCHEMA {
+        bail!(
+            "{url} has manifest schema {}, this bird understands {MANIFEST_SCHEMA}; update bird",
+            manifest.schema
+        );
+    }
+    Ok(manifest)
+}
+
 /// Latest available patch release per minor version on the mirror.
 pub fn available(cfg: &Config) -> Result<BTreeMap<String, String>> {
-    let url = format!("{}/?format=json", cfg.php_mirror.trim_end_matches('/'));
+    match mirror(cfg) {
+        Mirror::Manifest(base) => Ok(fetch_manifest(base)?
+            .latest
+            .into_iter()
+            .filter_map(|(minor, platforms)| Some((minor, platforms.get(platform())?.clone())))
+            .collect()),
+        Mirror::StaticPhp(base) => static_php_available(base),
+    }
+}
+
+#[derive(Deserialize)]
+struct MirrorEntry {
+    name: String,
+}
+
+fn static_php_available(base: &str) -> Result<BTreeMap<String, String>> {
+    let url = format!("{base}/?format=json");
     let entries: Vec<MirrorEntry> = http()?
         .get(&url)
         .send()
@@ -167,35 +267,205 @@ pub fn available(cfg: &Config) -> Result<BTreeMap<String, String>> {
     Ok(latest)
 }
 
+fn not_available(minor: &str, available: impl Iterator<Item = String>) -> anyhow::Error {
+    let list: Vec<String> = available.collect();
+    anyhow!(
+        "PHP {minor} is not available for {}. Available: {}",
+        platform(),
+        if list.is_empty() {
+            "none".into()
+        } else {
+            list.join(", ")
+        }
+    )
+}
+
 /// Downloads and installs (or updates) PHP `minor`. Returns the full version installed.
 pub fn install(cfg: &Config, minor: &str) -> Result<String> {
-    let available = available(cfg)?;
-    let Some(full) = available.get(minor).cloned() else {
-        let list: Vec<_> = available.keys().cloned().collect();
-        bail!(
-            "PHP {minor} is not available for {}. Available: {}",
-            platform(),
-            list.join(", ")
-        );
-    };
     let dir = paths().php_dir(minor);
-    let bin = dir.join("bin");
-    std::fs::create_dir_all(&bin)?;
-    std::fs::create_dir_all(paths().php_conf_d(minor))?;
-
-    let base = cfg.php_mirror.trim_end_matches('/');
-    for (kind, binary) in [("cli", "php"), ("fpm", "php-fpm")] {
-        let url = format!("{base}/php-{full}-{kind}-{}.tar.gz", platform());
-        let archive = download(&url, &format!("PHP {full} {kind}"))?;
-        extract_binary(&archive, binary, &bin.join(binary))
-            .with_context(|| format!("could not extract {binary} from {url}"))?;
+    let fresh = !dir.exists();
+    let result = install_into(cfg, minor, &dir);
+    if result.is_err() && fresh {
+        // Leave no half-installed version behind (an update keeps the old one).
+        let _ = std::fs::remove_dir_all(&dir);
     }
+    result
+}
+
+fn install_into(cfg: &Config, minor: &str, dir: &Path) -> Result<String> {
+    let bin = dir.join("bin");
+    let (full, source) = match mirror(cfg) {
+        Mirror::Manifest(base) => {
+            let manifest = fetch_manifest(base)?;
+            let full = manifest
+                .latest
+                .get(minor)
+                .and_then(|p| p.get(platform()))
+                .cloned()
+                .ok_or_else(|| {
+                    let mut minors: Vec<String> = manifest
+                        .latest
+                        .iter()
+                        .filter(|(_, p)| p.contains_key(platform()))
+                        .map(|(m, _)| m.clone())
+                        .collect();
+                    minors.sort_by_key(|v| version_key(v));
+                    not_available(minor, minors.into_iter())
+                })?;
+            let build = manifest
+                .builds
+                .iter()
+                .find(|b| b.version == full && b.platform == platform())
+                .with_context(|| format!("manifest lists PHP {full} but has no build for it"))?;
+            std::fs::create_dir_all(&bin)?;
+            let cli = download_verified(base, &build.cli, &format!("PHP {full} cli"))?;
+            extract_binary(&cli, "php", &bin.join("php"))?;
+            extract_licenses(&cli, &dir.join("licenses"))?;
+            let fpm = download_verified(base, &build.fpm, &format!("PHP {full} fpm"))?;
+            extract_binary(&fpm, "php-fpm", &bin.join("php-fpm"))?;
+            // Optional extensions (Xdebug) are installed but stay disabled.
+            let modules = dir.join("modules");
+            for (ext, asset) in &build.shared_extensions {
+                std::fs::create_dir_all(&modules)?;
+                let archive = download_verified(base, asset, &format!("{ext} for PHP {full}"))?;
+                let so = format!("{ext}.so");
+                extract_binary(&archive, &so, &modules.join(&so))?;
+            }
+            (full, SOURCE_BIRD)
+        }
+        Mirror::StaticPhp(base) => {
+            let available = static_php_available(base)?;
+            let full = available
+                .get(minor)
+                .cloned()
+                .ok_or_else(|| not_available(minor, available.keys().cloned()))?;
+            std::fs::create_dir_all(&bin)?;
+            for (kind, binary) in [("cli", "php"), ("fpm", "php-fpm")] {
+                let url = format!("{base}/php-{full}-{kind}-{}.tar.gz", platform());
+                let archive = download(&url, &format!("PHP {full} {kind}"))?;
+                extract_binary(&archive, binary, &bin.join(binary))
+                    .with_context(|| format!("could not extract {binary} from {url}"))?;
+            }
+            (full, SOURCE_STATIC_PHP)
+        }
+    };
+    write_managed_ini(minor, cfg.opcache)?;
     std::fs::write(dir.join("VERSION"), format!("{full}\n"))?;
+    std::fs::write(dir.join("SOURCE"), format!("{source}\n"))?;
     let ini = paths().php_ini(minor);
     if !ini.exists() {
         std::fs::write(&ini, default_ini(minor))?;
     }
     Ok(full)
+}
+
+/// Settings Bird owns, rewritten on install/update and by `bird opcache`
+/// (php.ini stays the user's). conf.d is parsed after php.ini, so these win
+/// over php.ini.
+const MANAGED_INI: &str = "00-bird.ini";
+
+pub fn managed_ini(opcache: bool) -> String {
+    let enable = u8::from(opcache);
+    format!(
+        "; Managed by Bird and rewritten on install/update and `bird opcache on|off`.\n\
+         ; conf.d is read after php.ini, so override these in a later file,\n\
+         ; e.g. conf.d/99-local.ini.\n\
+         \n\
+         ; Opcache checks every file's modification time on every request\n\
+         ; (revalidate_freq = 0), so code changes show up on the next request.\n\
+         opcache.enable = {enable}\n\
+         opcache.validate_timestamps = 1\n\
+         opcache.revalidate_freq = 0\n\
+         opcache.memory_consumption = 256\n\
+         opcache.max_accelerated_files = 50000\n"
+    )
+}
+
+pub fn write_managed_ini(minor: &str, opcache: bool) -> Result<()> {
+    let dir = paths().php_conf_d(minor);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join(MANAGED_INI), managed_ini(opcache))?;
+    Ok(())
+}
+
+/// Whether this PHP build has opcache compiled in (static-php's "common"
+/// builds from Bird 0.1 do not).
+pub fn has_opcache(minor: &str) -> bool {
+    std::process::Command::new(paths().php_binary(minor))
+        .args(["-n", "-m"])
+        .output()
+        .is_ok_and(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .any(|l| l == "Zend OPcache")
+        })
+}
+
+/// Downloads a manifest asset and checks its size and sha256.
+fn download_verified(base: &str, asset: &Asset, label: &str) -> Result<Vec<u8>> {
+    let valid_name = !asset.file.is_empty()
+        && asset
+            .file
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+        && !asset.file.starts_with('.');
+    if !valid_name {
+        bail!(
+            "refusing suspicious file name in manifest: {:?}",
+            asset.file
+        );
+    }
+    let url = format!("{base}/{}", asset.file);
+    let bytes = download(&url, label)?;
+    if bytes.len() as u64 != asset.size {
+        bail!(
+            "{} is {} bytes, the manifest says {}",
+            asset.file,
+            bytes.len(),
+            asset.size
+        );
+    }
+    let digest = ring::digest::digest(&ring::digest::SHA256, &bytes);
+    let actual: String = digest.as_ref().iter().map(|b| format!("{b:02x}")).collect();
+    if !actual.eq_ignore_ascii_case(asset.sha256.trim()) {
+        bail!(
+            "{} failed verification: sha256 {actual}, the manifest says {}",
+            asset.file,
+            asset.sha256
+        );
+    }
+    Ok(bytes)
+}
+
+/// Copies `licenses/*` from an archive into `dest` (file names only, no paths).
+fn extract_licenses(archive: &[u8], dest: &Path) -> Result<()> {
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
+    let mut created = false;
+    for entry in tar.entries()? {
+        let mut entry = entry?;
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        let path = entry.path()?.to_path_buf();
+        let path = path.strip_prefix("./").unwrap_or(&path);
+        let mut parts = path.components();
+        let (Some(first), Some(std::path::Component::Normal(name)), None) =
+            (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        if first.as_os_str() != "licenses" {
+            continue;
+        }
+        if !created {
+            let _ = std::fs::remove_dir_all(dest);
+            std::fs::create_dir_all(dest)?;
+            created = true;
+        }
+        let mut out = std::fs::File::create(dest.join(name))?;
+        std::io::copy(&mut entry, &mut out)?;
+    }
+    Ok(())
 }
 
 pub fn remove(minor: &str) -> Result<()> {
@@ -316,9 +586,55 @@ mod tests {
             header.set_entry_type(*kind);
             header.set_size(data.len() as u64);
             header.set_mode(0o755);
-            builder.append_data(&mut header, path, *data).unwrap();
+            // Write the name raw, so tests can also build malicious archives
+            // (`..` paths) that the tar crate refuses to create itself.
+            let name = &mut header.as_old_mut().name;
+            name.fill(0);
+            name[..path.len()].copy_from_slice(path.as_bytes());
+            header.set_cksum();
+            builder.append(&header, *data).unwrap();
         }
         builder.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[test]
+    fn extracts_licenses_without_paths() {
+        let dir = std::env::temp_dir().join(format!("bird-lic-{}", std::process::id()));
+        let archive = tarball(&[
+            ("php", tar::EntryType::Regular, b"bin"),
+            (
+                "licenses/src_php-src_0.txt",
+                tar::EntryType::Regular,
+                b"PHP License",
+            ),
+            ("licenses/../../escape.txt", tar::EntryType::Regular, b"no"),
+            ("other/readme.txt", tar::EntryType::Regular, b"no"),
+        ]);
+        extract_licenses(&archive, &dir).unwrap();
+        let names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(names, ["src_php-src_0.txt"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn parses_manifest() {
+        let m: Manifest = serde_json::from_str(r#"{
+            "schema": 1,
+            "latest": {"8.4": {"macos-aarch64": "8.4.26"}},
+            "builds": [{
+                "version": "8.4.26", "minor": "8.4", "platform": "macos-aarch64",
+                "cli": {"file": "php-8.4.26-cli-macos-aarch64.tar.gz", "sha256": "ab", "size": 1},
+                "fpm": {"file": "php-8.4.26-fpm-macos-aarch64.tar.gz", "sha256": "cd", "size": 2},
+                "shared_extensions": {"xdebug": {"version": "3.5.3", "file": "x.tar.gz", "sha256": "ef", "size": 3}},
+                "extensions": ["bcmath"], "sources": {}, "built_at": "2026-10-16T19:50:00Z"
+            }]
+        }"#).unwrap();
+        assert_eq!(m.latest["8.4"]["macos-aarch64"], "8.4.26");
+        assert_eq!(m.builds[0].shared_extensions["xdebug"].size, 3);
     }
 
     #[test]
@@ -341,6 +657,15 @@ mod tests {
         let only_nested = tarball(&[("evil/php", tar::EntryType::Regular, b"x")]);
         assert!(extract_binary(&only_nested, "php", &dest).is_err());
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn managed_ini_revalidates_every_request() {
+        let on = managed_ini(true);
+        assert!(on.contains("opcache.enable = 1"));
+        assert!(on.contains("opcache.validate_timestamps = 1"));
+        assert!(on.contains("opcache.revalidate_freq = 0"));
+        assert!(managed_ini(false).contains("opcache.enable = 0"));
     }
 
     #[test]

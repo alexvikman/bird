@@ -35,6 +35,8 @@ pub struct State {
     /// Ports actually listened on; port changes in the config need a restart.
     ports: (u16, u16),
     shutdown: Notify,
+    /// Whether the listening sockets came from launchd (the installed service).
+    launchd: std::sync::atomic::AtomicBool,
 }
 
 fn config_mtime() -> Option<SystemTime> {
@@ -54,6 +56,7 @@ impl State {
             started: Instant::now(),
             ports,
             shutdown: Notify::new(),
+            launchd: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -116,8 +119,12 @@ async fn main(http_port: Option<u16>, https_port: Option<u16>) -> Result<()> {
     let tls_config = tls::server_config(tls::CertResolver::new(tls::Ca::load()?, state.clone()))?;
     let acceptor = TlsAcceptor::from(Arc::new(tls_config));
 
-    let http = listener("http", SocketAddr::from((cfg.listen, cfg.http_port))).await?;
-    let https = listener("https", SocketAddr::from((cfg.listen, cfg.https_port))).await?;
+    let (http, from_launchd) =
+        listener("http", SocketAddr::from((cfg.listen, cfg.http_port))).await?;
+    let (https, _) = listener("https", SocketAddr::from((cfg.listen, cfg.https_port))).await?;
+    state
+        .launchd
+        .store(from_launchd, std::sync::atomic::Ordering::Relaxed);
     let dns_socket = UdpSocket::bind(("127.0.0.1", cfg.dns_port))
         .await
         .with_context(|| format!("could not bind DNS to 127.0.0.1:{}", cfg.dns_port))?;
@@ -150,21 +157,23 @@ async fn main(http_port: Option<u16>, https_port: Option<u16>) -> Result<()> {
     Ok(())
 }
 
-/// A listener handed over by launchd (socket activation), or one we bind ourselves.
-async fn listener(name: &str, addr: SocketAddr) -> Result<TcpListener> {
+/// A listener handed over by launchd (socket activation), or one we bind
+/// ourselves. The flag says which.
+async fn listener(name: &str, addr: SocketAddr) -> Result<(TcpListener, bool)> {
     #[cfg(target_os = "macos")]
     if let Some(fd) = launchd::socket(name).into_iter().next() {
         use std::os::fd::FromRawFd;
         let std_listener = unsafe { std::net::TcpListener::from_raw_fd(fd) };
         std_listener.set_nonblocking(true)?;
-        return Ok(TcpListener::from_std(std_listener)?);
+        return Ok((TcpListener::from_std(std_listener)?, true));
     }
-    TcpListener::bind(addr).await.with_context(|| {
+    let listener = TcpListener::bind(addr).await.with_context(|| {
         format!(
             "could not listen on {addr} for {name}. Ports below 1024 need `bird install` \
              (or run the daemon with --http-port/--https-port)"
         )
-    })
+    })?;
+    Ok((listener, false))
 }
 
 async fn accept_loop(listener: TcpListener, state: Arc<State>, tls: Option<TlsAcceptor>) {
@@ -273,6 +282,7 @@ async fn control_command(state: &Arc<State>, req: &serde_json::Value) -> serde_j
                 "tld": cfg.tld,
                 "http_port": cfg.http_port,
                 "https_port": cfg.https_port,
+                "launchd": state.launchd.load(std::sync::atomic::Ordering::Relaxed),
                 "fpm": state.fpm.status().await,
             })
         }

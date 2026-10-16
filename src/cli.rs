@@ -106,6 +106,11 @@ enum Command {
         #[arg(long)]
         site: Option<String>,
     },
+    /// Turn opcache on or off for all PHP versions (no argument: show the state)
+    Opcache {
+        #[arg(value_parser = ["on", "off"])]
+        state: Option<String>,
+    },
     /// Show which PHP binary serves the current directory, and why
     WhichPhp,
     /// Install PHP versions, e.g. `bird php:install 8.3 8.4`
@@ -232,6 +237,7 @@ pub fn main() -> Result<()> {
         Command::Use { version } => use_version(&version),
         Command::Isolate { version, site } => isolate(&version, site),
         Command::Unisolate { site } => unisolate(site),
+        Command::Opcache { state } => opcache(state.as_deref()),
         Command::WhichPhp => which_php(),
         Command::PhpInstall { versions } => php_install(&versions),
         Command::PhpList { available } => php_list(available),
@@ -332,8 +338,13 @@ fn human_duration(secs: u64) -> String {
 
 fn restart(version: Option<String>, daemon: bool) -> Result<()> {
     if daemon {
+        let launchd = install::running_under_launchd().context("the bird daemon is not running")?;
         control::send(json!({"cmd": "shutdown"}))?;
-        ui::ok("daemon stopping; launchd starts it again");
+        if launchd {
+            ui::ok("daemon restarting (launchd starts it again)");
+        } else {
+            ui::warn("stopped the foreground daemon; start it again with `bird daemon`");
+        }
         return Ok(());
     }
     let version = version.map(|v| php::require_normalized(&v)).transpose()?;
@@ -615,6 +626,43 @@ fn unisolate(site: Option<String>) -> Result<()> {
     Ok(())
 }
 
+fn opcache(state: Option<&str>) -> Result<()> {
+    let mut cfg = Config::load()?;
+    if let Some(state) = state {
+        cfg.opcache = state == "on";
+        cfg.save()?;
+        for i in php::installed() {
+            php::write_managed_ini(&i.minor, cfg.opcache)?;
+        }
+        if control::is_running() {
+            control::send(json!({"cmd": "restart-php"}))?;
+        }
+        if cfg.opcache {
+            ui::ok("opcache is on (files are revalidated on every request)");
+        } else {
+            ui::ok("opcache is off");
+        }
+    } else {
+        println!(
+            "opcache is {}",
+            if cfg.opcache {
+                green("on")
+            } else {
+                yellow("off")
+            }
+        );
+    }
+    for i in php::installed() {
+        if !php::has_opcache(&i.minor) {
+            ui::warn(format!(
+                "PHP {} ({}) has no opcache compiled in; `bird php:update {}` installs Bird's build",
+                i.version, i.source, i.minor
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn which_php() -> Result<()> {
     let cfg = Config::load()?;
     match php::resolve_for_dir(&cfg, &cwd()?) {
@@ -679,16 +727,25 @@ fn php_list(available: bool) -> Result<()> {
             } else {
                 String::new()
             };
-            let mut row = vec![
-                v.clone(),
-                inst.map(|i| i.version.clone()).unwrap_or_else(|| dim("—")),
-                marker,
-            ];
+            let version = match inst {
+                Some(i) if i.source != php::SOURCE_BIRD => {
+                    format!("{} {}", i.version, dim(&format!("({})", i.source)))
+                }
+                Some(i) => i.version.clone(),
+                None => dim("—"),
+            };
+            let mut row = vec![v.clone(), version, marker];
             if let Some(r) = &remote {
                 let latest = r.get(v).cloned().unwrap_or_default();
                 let update = match inst {
                     Some(i) if !latest.is_empty() && i.version != latest => {
                         yellow(&format!("{latest} available"))
+                    }
+                    Some(i) if !latest.is_empty() && i.source != php::mirror_source(&cfg) => {
+                        yellow(&format!(
+                            "{latest} ({}) available",
+                            php::mirror_source(&cfg)
+                        ))
                     }
                     _ => dim(&latest),
                 };
@@ -719,21 +776,30 @@ fn php_update(versions: &[String]) -> Result<()> {
     let installed = php::installed();
     let mut updated = Vec::new();
     for v in targets {
-        let current = installed
-            .iter()
-            .find(|i| i.minor == v)
-            .map(|i| i.version.clone());
-        let Some(current) = current else {
+        let Some(inst) = installed.iter().find(|i| i.minor == v) else {
             ui::warn(format!("PHP {v} is not installed"));
             continue;
         };
+        let current = &inst.version;
+        // A build from another source (e.g. static-php from Bird 0.1) is
+        // replaced even at the same version: Bird's builds have opcache etc.
+        let other_source = inst.source != php::mirror_source(&cfg);
         match remote.get(&v) {
-            Some(latest) if *latest != current => {
+            Some(latest) if latest != current || other_source => {
                 let full = php::install(&cfg, &v)?;
-                ui::ok(format!("PHP {current} → {full}"));
+                if other_source {
+                    ui::ok(format!(
+                        "PHP {current} ({}) → {full} ({})",
+                        inst.source,
+                        php::mirror_source(&cfg)
+                    ));
+                } else {
+                    ui::ok(format!("PHP {current} → {full}"));
+                }
                 updated.push(v);
             }
-            _ => ui::ok(format!("PHP {current} is up to date")),
+            Some(_) => ui::ok(format!("PHP {current} is up to date")),
+            None => ui::warn(format!("PHP {v} is not available from {}", cfg.php_mirror)),
         }
     }
     if !updated.is_empty() && control::is_running() {

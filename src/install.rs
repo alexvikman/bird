@@ -505,14 +505,29 @@ pub fn start() -> Result<()> {
     Ok(())
 }
 
+/// Whether the daemon answering on this BIRD_HOME's control socket runs as
+/// the launchd service. `None` when no daemon answers.
+pub fn running_under_launchd() -> Option<bool> {
+    let status = control::send(serde_json::json!({"cmd": "status"})).ok()?;
+    // Daemons from before this field existed: assume the service if installed.
+    Some(
+        status["launchd"]
+            .as_bool()
+            .unwrap_or_else(is_system_installed),
+    )
+}
+
 pub fn stop() -> Result<()> {
-    if !is_system_installed() {
-        if control::is_running() {
+    // A foreground daemon (`bird daemon`) is stopped directly, even when the
+    // service is installed too; only the service needs launchctl.
+    match running_under_launchd() {
+        Some(false) => {
             control::send(serde_json::json!({"cmd": "shutdown"}))?;
             ui::ok("stopped the foreground daemon");
             return Ok(());
         }
-        bail!("Bird is not running");
+        None if !is_system_installed() => bail!("Bird is not running"),
+        _ => {}
     }
     let status = Command::new("sudo")
         .args(["launchctl", "bootout", &format!("system/{LABEL}")])

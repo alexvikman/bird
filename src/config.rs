@@ -26,7 +26,11 @@ pub struct Config {
     pub dns_port: u16,
     /// Stop a PHP-FPM pool after this many idle minutes (0 = keep running).
     pub php_idle_minutes: u64,
-    /// Where PHP builds are downloaded from (a static-php-cli distribution).
+    /// Opcache for PHP-FPM (`bird opcache on|off`). It revalidates files on
+    /// every request, so edits are picked up immediately.
+    pub opcache: bool,
+    /// Where PHP builds are downloaded from: Bird's own release (with
+    /// manifest.json), or a dl.static-php.dev distribution.
     pub php_mirror: String,
     /// Parked directories: every subdirectory is served as `<dir>.<tld>`.
     pub paths: Vec<PathBuf>,
@@ -57,6 +61,8 @@ pub struct ProxyConfig {
     pub secure: bool,
 }
 
+const OLD_DEFAULT_MIRROR: &str = "https://dl.static-php.dev/static-php-cli/common";
+
 fn is_false(b: &bool) -> bool {
     !*b
 }
@@ -71,7 +77,8 @@ impl Default for Config {
             https_port: 443,
             dns_port: 53535,
             php_idle_minutes: 30,
-            php_mirror: "https://dl.static-php.dev/static-php-cli/common".into(),
+            opcache: true,
+            php_mirror: crate::php::DEFAULT_MIRROR.into(),
             paths: Vec::new(),
             sites: BTreeMap::new(),
             proxies: BTreeMap::new(),
@@ -91,13 +98,18 @@ impl Config {
     }
 
     pub fn load_from(path: &Path) -> Result<Self> {
-        match std::fs::read_to_string(path) {
-            Ok(text) => {
-                toml::from_str(&text).with_context(|| format!("could not parse {}", path.display()))
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(e) => Err(e).with_context(|| format!("could not read {}", path.display())),
+        let mut cfg: Self = match std::fs::read_to_string(path) {
+            Ok(text) => toml::from_str(&text)
+                .with_context(|| format!("could not parse {}", path.display()))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
+            Err(e) => return Err(e).with_context(|| format!("could not read {}", path.display())),
+        };
+        // Bird 0.1 wrote its old default mirror into every config; move those
+        // to Bird's own builds. (Other static-php URLs are kept as chosen.)
+        if cfg.php_mirror == OLD_DEFAULT_MIRROR {
+            cfg.php_mirror = crate::php::DEFAULT_MIRROR.into();
         }
+        Ok(cfg)
     }
 
     pub fn save(&mut self) -> Result<()> {
@@ -119,5 +131,27 @@ impl Config {
 
     pub fn domain(&self, name: &str) -> String {
         format!("{name}.{}", self.tld)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrates_the_old_default_mirror() {
+        let dir = std::env::temp_dir().join(format!("bird-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.toml");
+        std::fs::write(&file, format!("php_mirror = \"{OLD_DEFAULT_MIRROR}\"\n")).unwrap();
+        assert_eq!(
+            Config::load_from(&file).unwrap().php_mirror,
+            crate::php::DEFAULT_MIRROR
+        );
+
+        let custom = "https://dl.static-php.dev/static-php-cli/bulk";
+        std::fs::write(&file, format!("php_mirror = \"{custom}\"\n")).unwrap();
+        assert_eq!(Config::load_from(&file).unwrap().php_mirror, custom);
+        std::fs::remove_dir_all(dir).ok();
     }
 }

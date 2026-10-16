@@ -17,10 +17,16 @@ cd my-app && bird isolate 8.3
 | Web server | Built-in HTTP/1.1 + HTTP/2 server (hyper + rustls). Static files are served directly, PHP goes to PHP-FPM over FastCGI. No nginx, no config to regenerate. |
 | HTTPS | A local CA (trusted once at install) issues a certificate the first time a hostname is requested. Every site and subdomain works over HTTPS. The CA is name-constrained to the TLD (and no IP addresses), so even a leaked key can't impersonate real domains; `bird tld` replaces it. |
 | Ports 80/443 | launchd binds them as root and hands the sockets to the daemon, which runs as you. No privileged helper stays running. |
-| PHP | Static builds from [static-php-cli](https://static-php.dev) in `~/.bird/php/<version>`. One FPM pool per version, started on first request and stopped when idle. |
+| PHP | Bird's own static builds ([php-builds/](php-builds/), made with [static-php-cli](https://static-php.dev)), checked against sha256 sums from the release manifest, in `~/.bird/php/<version>`. One FPM pool per version, started on first request and stopped when idle. |
 | CLI | `~/.bird/bin/php`, `php8.4` and `composer` are shims that pick the same PHP version the site is served with. |
 
 PHP version per site, in order: `bird isolate` → `.php-version` in the project → global (`bird use`).
+
+Opcache is on by default with `opcache.revalidate_freq = 0`: every request
+checks the files' modification times, so an edit shows up on the next request
+(a Laravel page goes from ~65 ms to ~9 ms). `bird opcache off` turns it off for
+all versions. Bird's settings live in `~/.bird/php/<version>/conf.d/00-bird.ini`;
+override them in a later file such as `conf.d/99-local.ini`.
 
 ## Commands
 
@@ -33,6 +39,7 @@ bird secure [NAME] | unsecure [NAME]          # redirect HTTP → HTTPS
 bird proxy NAME http://127.0.0.1:5173 | unproxy NAME
 bird use 8.4 | isolate 8.3 [--site NAME] | unisolate | which-php
 bird php:install 8.3 8.4 | php:list [--available] | php:update | php:remove 8.3
+bird opcache [on|off]                          # on by default; files revalidated every request
 bird ini [VERSION] [--edit] | logs [bird|8.4] [-f] | tld [NAME] | open [NAME]
 bird php …  | bird composer …
 bird import herd [--install-php]

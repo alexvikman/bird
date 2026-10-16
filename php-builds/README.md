@@ -34,7 +34,9 @@ installs missing build tools (autoconf, automake, libtool, bison, re2c, …) wit
 | `SPC_PREBUILT=1` | off | Use spc's pre-built static libraries instead of compiling them. Much faster, but trusts binaries from the spc project. |
 | `SPC_DEBUG=1` | off | Verbose spc output |
 
-Before packaging, `build.sh` checks that:
+Before building, `build.sh` verifies the spc binary against a pinned sha256,
+php-src against the sha256 php.net publishes, and the PECL sources against
+`sources.txt`. Before packaging, it checks that:
 
 - `php -v` reports the requested version,
 - every extension in `extensions.txt` is loaded in both `php` and `php-fpm`,
@@ -84,17 +86,19 @@ archives as workflow artifacts.
 
 ### Archives
 
-| Name | Contains (at the archive root) |
+| Name | Contains |
 | --- | --- |
-| `php-<version>-cli-<platform>.tar.gz` | `php` |
-| `php-<version>-fpm-<platform>.tar.gz` | `php-fpm` |
-| `php-<version>-<ext>-<platform>.tar.gz` | `<ext>.so`, e.g. `xdebug.so` |
+| `php-<version>-cli-<platform>.tar.gz` | `php` (at the root) and `licenses/` |
+| `php-<version>-fpm-<platform>.tar.gz` | `php-fpm` and `licenses/` |
+| `php-<version>-<ext>-<platform>.tar.gz` | `<ext>.so`, e.g. `xdebug.so`, and `licenses/` |
+
+`licenses/` holds the licenses of PHP, the extensions and every bundled
+library (`spc dump-license`); Bird installs them to `~/.bird/php/<minor>/licenses/`.
 
 `<platform>` is `macos-aarch64` or `macos-x86_64` (as `platform()` in
-`src/php.rs`). The cli/fpm naming is the same as dl.static-php.dev's, so
-Bird's current download code works unchanged with
-`php_mirror = "https://github.com/<owner>/<repo>/releases/download/php"`; only
-the version listing (`?format=json` today) has to switch to `manifest.json`.
+`src/php.rs`). Bird's default `php_mirror` is this release; it reads
+`manifest.json` and verifies every archive's size and sha256 before
+extracting it.
 
 ## manifest.json
 
