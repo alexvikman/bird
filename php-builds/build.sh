@@ -221,7 +221,10 @@ for ext in $(read_list "$here/shared-extensions.txt"); do
     [ "$ext" = "xdebug" ] && flag="zend_extension=$so"
     "$php" -n -d "$flag" -r "exit(extension_loaded('$ext') ? 0 : 1);" ||
         die "php cannot load $ext.so"
-    "$fpm" -n -d "$flag" -m | grep -qix "$ext" || die "php-fpm cannot load $ext.so"
+    # Capture first: with pipefail, `grep -q` exiting early SIGPIPEs php-fpm
+    # and fails the pipeline even when the module is there.
+    loaded="$("$fpm" -n -d "$flag" -m)" || die "php-fpm fails with $ext.so"
+    grep -qix "$ext" <<<"$loaded" || die "php-fpm cannot load $ext.so"
 done
 
 # Binaries must only depend on the OS, never on Homebrew or the build tree.
@@ -245,7 +248,12 @@ rm -rf "$licenses" && mkdir -p "$licenses/licenses"
 "$spc" dump-license --for-extensions="$all_exts" --dump-dir="$licenses/licenses" >/dev/null
 if [ -n "$libs" ]; then
     "$spc" dump-license --for-libs="$libs" --without-php --dump-dir="$licenses/libs" >/dev/null
-    cp -n "$licenses/libs/"* "$licenses/licenses/"
+    # Both dumps can contain the same library (e.g. zlib); keep the first.
+    # (Not `cp -n`: on macOS it exits 1 when it skips a file, which set -e
+    # turns into a failed build.)
+    for f in "$licenses/libs/"*; do
+        [ -e "$licenses/licenses/${f##*/}" ] || cp "$f" "$licenses/licenses/"
+    done
     rm -rf "$licenses/libs"
 fi
 [ -f "$licenses/licenses/src_php-src_0.txt" ] || die "license dump is missing PHP's license"
