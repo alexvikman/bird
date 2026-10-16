@@ -139,7 +139,9 @@ impl Paths {
             std::fs::create_dir_all(dir)?;
         }
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(self.run(), std::fs::Permissions::from_mode(0o700))?;
+        for private in [self.run(), self.ca_dir()] {
+            std::fs::set_permissions(private, std::fs::Permissions::from_mode(0o700))?;
+        }
         Ok(())
     }
 }

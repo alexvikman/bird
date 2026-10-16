@@ -5,7 +5,8 @@
 //! so every `*.test` site works over HTTPS without per-site setup.
 
 use std::collections::HashMap;
-use std::os::unix::fs::PermissionsExt;
+use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -32,7 +33,13 @@ pub fn ensure_ca() -> Result<bool> {
     if paths().ca_cert().is_file() && paths().ca_key().is_file() {
         return Ok(false);
     }
-    std::fs::create_dir_all(paths().ca_dir())?;
+    // The CA is trusted system-wide, so its key must never be readable by others.
+    let dir = paths().ca_dir();
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir)?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
     let user = user_home()
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -55,9 +62,20 @@ pub fn ensure_ca() -> Result<bool> {
 
     let key = KeyPair::generate()?;
     let cert = params.self_signed(&key)?;
+    // Create the key file as 0600 from the start (no window with umask
+    // permissions), then move it into place.
+    let tmp_key = paths().ca_key().with_extension("pem.tmp");
+    let _ = std::fs::remove_file(&tmp_key);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp_key)?;
+    file.write_all(key.serialize_pem().as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&tmp_key, paths().ca_key())?;
     std::fs::write(paths().ca_cert(), cert.pem())?;
-    std::fs::write(paths().ca_key(), key.serialize_pem())?;
-    std::fs::set_permissions(paths().ca_key(), std::fs::Permissions::from_mode(0o600))?;
     Ok(true)
 }
 
