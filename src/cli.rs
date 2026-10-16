@@ -1,0 +1,839 @@
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail};
+use clap::{Parser, Subcommand};
+use serde_json::json;
+
+use crate::config::{Config, ProxyConfig};
+use crate::paths::paths;
+use crate::sites::{self, SiteKind};
+use crate::ui::{self, bold, dim, green, yellow};
+use crate::{control, herd, install, php, proxy, shim};
+
+#[derive(Parser)]
+#[command(
+    name = "bird",
+    version,
+    about = "Fast, minimal local PHP development: *.test sites, HTTPS and multiple PHP versions."
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Set Bird up: CA, PHP, shims, DNS resolver and the background service (asks for sudo)
+    Install {
+        /// Only set up ~/.bird; skip everything that needs sudo
+        #[arg(long)]
+        user_only: bool,
+        /// PHP version to install if none is installed yet (default: latest)
+        #[arg(long)]
+        php: Option<String>,
+    },
+    /// Remove the background service, DNS resolver and CA trust (asks for sudo)
+    Uninstall {
+        /// Also delete ~/.bird (PHP versions, config, CA)
+        #[arg(long)]
+        purge: bool,
+    },
+    /// Check that everything is wired up correctly
+    Doctor,
+    /// Show the daemon state and running PHP pools
+    Status,
+    /// Start the background service
+    Start,
+    /// Stop the background service
+    Stop,
+    /// Restart PHP-FPM pools (all, or one version) and reload the config
+    Restart {
+        /// Only this PHP version
+        version: Option<String>,
+        /// Restart the whole daemon instead
+        #[arg(long)]
+        daemon: bool,
+    },
+
+    /// Serve every subdirectory of PATH (default: current directory) as <dir>.test
+    Park { path: Option<PathBuf> },
+    /// Stop serving a parked directory
+    Forget { path: Option<PathBuf> },
+    /// List parked directories
+    Paths,
+    /// Serve the current directory as NAME.test (default: directory name)
+    Link {
+        name: Option<String>,
+        /// Redirect HTTP to HTTPS
+        #[arg(long)]
+        secure: bool,
+        /// Pin a PHP version for this site
+        #[arg(long, value_name = "VERSION")]
+        isolate: Option<String>,
+    },
+    /// Stop serving a linked site
+    Unlink { name: Option<String> },
+    /// List all sites and proxies
+    #[command(visible_aliases = ["links", "parked"])]
+    Sites,
+    /// Redirect HTTP to HTTPS for a site (HTTPS always works)
+    Secure { name: Option<String> },
+    /// Stop redirecting HTTP to HTTPS
+    Unsecure { name: Option<String> },
+    /// Serve NAME.test as a reverse proxy, e.g. `bird proxy vite http://127.0.0.1:5173`
+    Proxy {
+        name: String,
+        upstream: String,
+        #[arg(long)]
+        secure: bool,
+    },
+    /// Remove a proxy
+    Unproxy { name: String },
+    /// Open a site in the browser
+    Open { name: Option<String> },
+
+    /// Set the global PHP version (installs it if needed)
+    Use { version: String },
+    /// Pin a PHP version for the current (or given) site
+    Isolate {
+        version: String,
+        #[arg(long)]
+        site: Option<String>,
+    },
+    /// Remove a site's PHP pin
+    Unisolate {
+        #[arg(long)]
+        site: Option<String>,
+    },
+    /// Show which PHP binary serves the current directory, and why
+    WhichPhp,
+    /// Install PHP versions, e.g. `bird php:install 8.3 8.4`
+    #[command(name = "php:install")]
+    PhpInstall {
+        #[arg(required = true)]
+        versions: Vec<String>,
+    },
+    /// List installed (and with --available, downloadable) PHP versions
+    #[command(name = "php:list")]
+    PhpList {
+        #[arg(long)]
+        available: bool,
+    },
+    /// Update installed PHP versions to their latest patch release
+    #[command(name = "php:update")]
+    PhpUpdate { versions: Vec<String> },
+    /// Remove a PHP version
+    #[command(name = "php:remove")]
+    PhpRemove { version: String },
+    /// Print (or --edit) the php.ini of a PHP version
+    Ini {
+        version: Option<String>,
+        #[arg(long)]
+        edit: bool,
+    },
+    /// Run PHP with the version for the current directory
+    #[command(disable_help_flag = true)]
+    Php {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<OsString>,
+    },
+    /// Run Composer with the PHP version for the current directory
+    #[command(disable_help_flag = true)]
+    Composer {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<OsString>,
+    },
+
+    /// Show or change the top-level domain (default: test)
+    Tld { tld: Option<String> },
+    /// Tail a log: `bird` (default) or a PHP version for its FPM log
+    Logs {
+        which: Option<String>,
+        #[arg(short, long)]
+        follow: bool,
+    },
+    /// Import sites, parked paths and PHP pins from another tool
+    Import {
+        #[arg(value_parser = ["herd"])]
+        from: String,
+        /// Also install the PHP versions the imported sites need
+        #[arg(long)]
+        install_php: bool,
+    },
+
+    /// Run the server in the foreground (used by launchd)
+    Daemon {
+        #[arg(long)]
+        http_port: Option<u16>,
+        #[arg(long)]
+        https_port: Option<u16>,
+    },
+    #[command(hide = true)]
+    SystemInstall {
+        #[arg(long)]
+        user: String,
+        #[arg(long)]
+        group: String,
+        #[arg(long)]
+        home: PathBuf,
+    },
+    #[command(hide = true)]
+    SystemUninstall {
+        #[arg(long)]
+        ca_name: Option<String>,
+    },
+}
+
+pub fn main() -> Result<()> {
+    let cli = Cli::parse();
+    match cli.command {
+        Command::Install { user_only, php } => install::install(user_only, php),
+        Command::Uninstall { purge } => install::uninstall(purge),
+        Command::Doctor => install::doctor(),
+        Command::Status => status(),
+        Command::Start => install::start(),
+        Command::Stop => install::stop(),
+        Command::Restart { version, daemon } => restart(version, daemon),
+
+        Command::Park { path } => park(path),
+        Command::Forget { path } => forget(path),
+        Command::Paths => {
+            for p in Config::load()?.paths {
+                println!("{}", p.display());
+            }
+            Ok(())
+        }
+        Command::Link {
+            name,
+            secure,
+            isolate,
+        } => link(name, secure, isolate),
+        Command::Unlink { name } => unlink(name),
+        Command::Sites => list_sites(),
+        Command::Secure { name } => set_secure(name, true),
+        Command::Unsecure { name } => set_secure(name, false),
+        Command::Proxy {
+            name,
+            upstream,
+            secure,
+        } => add_proxy(name, upstream, secure),
+        Command::Unproxy { name } => {
+            let mut cfg = Config::load()?;
+            if cfg.proxies.remove(&name).is_none() {
+                bail!("no proxy named {name}");
+            }
+            cfg.save()?;
+            ui::ok(format!("removed proxy {}", cfg.domain(&name)));
+            Ok(())
+        }
+        Command::Open { name } => open(name),
+
+        Command::Use { version } => use_version(&version),
+        Command::Isolate { version, site } => isolate(&version, site),
+        Command::Unisolate { site } => unisolate(site),
+        Command::WhichPhp => which_php(),
+        Command::PhpInstall { versions } => php_install(&versions),
+        Command::PhpList { available } => php_list(available),
+        Command::PhpUpdate { versions } => php_update(&versions),
+        Command::PhpRemove { version } => php_remove(&version),
+        Command::Ini { version, edit } => ini(version, edit),
+        Command::Php { args } => shim::exec_php(&shim::current_version()?, args),
+        Command::Composer { args } => shim::exec_composer(&shim::current_version()?, args),
+
+        Command::Tld { tld } => set_tld(tld),
+        Command::Logs { which, follow } => logs(which, follow),
+        Command::Import { from, install_php } => {
+            debug_assert_eq!(from, "herd");
+            herd::import(install_php)
+        }
+
+        Command::Daemon {
+            http_port,
+            https_port,
+        } => crate::daemon::run(http_port, https_port),
+        Command::SystemInstall { user, group, home } => {
+            install::system_install(&user, &group, &home)
+        }
+        Command::SystemUninstall { ca_name } => install::system_uninstall(ca_name.as_deref()),
+    }
+}
+
+fn cwd() -> Result<PathBuf> {
+    std::env::current_dir().context("could not determine the current directory")
+}
+
+/// The site a command applies to: the given name, or the site containing the current directory.
+fn target_site(cfg: &Config, name: Option<String>) -> Result<String> {
+    if let Some(name) = name {
+        let name = sites::slug(name.trim_end_matches(&format!(".{}", cfg.tld)));
+        if sites::find_site(cfg, &name).is_none() {
+            bail!("no site named {name} (see `bird sites`)");
+        }
+        return Ok(name);
+    }
+    match sites::site_for_dir(cfg, &cwd()?) {
+        Some(site) => Ok(site.name),
+        None => {
+            bail!("the current directory is not a Bird site; run `bird link` or pass a site name")
+        }
+    }
+}
+
+fn status() -> Result<()> {
+    let mut cfg = Config::load()?;
+    match control::send(json!({"cmd": "status"})) {
+        Ok(s) => {
+            let port = |key: &str, default: u16| s[key].as_u64().map_or(default, |p| p as u16);
+            cfg.http_port = port("http_port", cfg.http_port);
+            cfg.https_port = port("https_port", cfg.https_port);
+            ui::ok(format!(
+                "bird {} running (pid {}, up {})",
+                s["version"].as_str().unwrap_or("?"),
+                s["pid"],
+                human_duration(s["uptime_secs"].as_u64().unwrap_or(0))
+            ));
+            let pools = s["fpm"].as_array().cloned().unwrap_or_default();
+            if pools.is_empty() {
+                println!(
+                    "  {}",
+                    dim("no PHP-FPM pools running (they start on the first request)")
+                );
+            }
+            for p in pools {
+                println!(
+                    "  php-fpm {}  pid {}  idle {}",
+                    p["version"].as_str().unwrap_or("?"),
+                    p["pid"],
+                    human_duration(p["idle_secs"].as_u64().unwrap_or(0))
+                );
+            }
+        }
+        Err(_) => ui::fail("bird daemon is not running (start it with `bird start`)"),
+    }
+    println!(
+        "  tld .{} · global PHP {} · http :{} · https :{}",
+        cfg.tld,
+        cfg.php.as_deref().unwrap_or("none"),
+        cfg.http_port,
+        cfg.https_port
+    );
+    Ok(())
+}
+
+fn human_duration(secs: u64) -> String {
+    match secs {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m", s / 60),
+        s if s < 86400 => format!("{}h {}m", s / 3600, s % 3600 / 60),
+        s => format!("{}d {}h", s / 86400, s % 86400 / 3600),
+    }
+}
+
+fn restart(version: Option<String>, daemon: bool) -> Result<()> {
+    if daemon {
+        control::send(json!({"cmd": "shutdown"}))?;
+        ui::ok("daemon stopping; launchd starts it again");
+        return Ok(());
+    }
+    let version = version.map(|v| php::require_normalized(&v)).transpose()?;
+    let reply = control::send(json!({"cmd": "restart-php", "version": version}))?;
+    let stopped: Vec<&str> = reply["stopped"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    if stopped.is_empty() {
+        ui::ok("config reloaded; no PHP pools were running");
+    } else {
+        ui::ok(format!(
+            "restarted PHP {} (pools start again on the next request)",
+            stopped.join(", ")
+        ));
+    }
+    Ok(())
+}
+
+fn absolute(path: Option<PathBuf>) -> Result<PathBuf> {
+    let path = path.unwrap_or(cwd()?);
+    path.canonicalize()
+        .with_context(|| format!("{} does not exist", path.display()))
+}
+
+fn park(path: Option<PathBuf>) -> Result<()> {
+    let path = absolute(path)?;
+    let mut cfg = Config::load()?;
+    if !cfg.paths.contains(&path) {
+        cfg.paths.push(path.clone());
+        cfg.save()?;
+    }
+    let count = sites::all_sites(&cfg)
+        .iter()
+        .filter(|s| s.path.parent() == Some(&path))
+        .count();
+    ui::ok(format!(
+        "parked {} ({count} sites, served as <dir>.{})",
+        path.display(),
+        cfg.tld
+    ));
+    Ok(())
+}
+
+fn forget(path: Option<PathBuf>) -> Result<()> {
+    let path = absolute(path)?;
+    let mut cfg = Config::load()?;
+    let before = cfg.paths.len();
+    cfg.paths.retain(|p| p != &path);
+    if cfg.paths.len() == before {
+        bail!("{} is not parked", path.display());
+    }
+    cfg.save()?;
+    ui::ok(format!("forgot {}", path.display()));
+    Ok(())
+}
+
+fn link(name: Option<String>, secure: bool, isolate: Option<String>) -> Result<()> {
+    let dir = absolute(None)?;
+    let mut cfg = Config::load()?;
+    let name = sites::slug(&name.unwrap_or_else(|| {
+        dir.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string()
+    }));
+    if name.is_empty() {
+        bail!("could not derive a site name; pass one: bird link myapp");
+    }
+    if cfg.proxies.contains_key(&name) {
+        bail!("{} is already a proxy", cfg.domain(&name));
+    }
+    let isolate = isolate.map(|v| php::require_normalized(&v)).transpose()?;
+    if let Some(v) = &isolate {
+        ensure_php(&cfg, v)?;
+    }
+    let site = cfg.site_mut(&name);
+    site.path = Some(dir.clone());
+    site.secure |= secure;
+    if isolate.is_some() {
+        site.php = isolate;
+    }
+    cfg.save()?;
+    ui::ok(format!(
+        "{} → {}",
+        bold(&format!("https://{}", cfg.domain(&name))),
+        dir.display()
+    ));
+    Ok(())
+}
+
+fn unlink(name: Option<String>) -> Result<()> {
+    let mut cfg = Config::load()?;
+    let name = match name {
+        Some(n) => sites::slug(&n),
+        None => {
+            let dir = absolute(None)?;
+            cfg.sites
+                .iter()
+                .find(|(_, s)| s.path.as_deref() == Some(dir.as_path()))
+                .map(|(n, _)| n.clone())
+                .context("the current directory is not linked")?
+        }
+    };
+    match cfg.sites.get_mut(&name) {
+        Some(s) if s.path.is_some() => s.path = None,
+        _ => bail!("{name} is not a linked site"),
+    }
+    // Leftover pins/secure flags stay in case it's also a parked site; save() drops empty entries.
+    cfg.save()?;
+    ui::ok(format!("unlinked {}", cfg.domain(&name)));
+    Ok(())
+}
+
+fn list_sites() -> Result<()> {
+    let cfg = Config::load()?;
+    let all = sites::all_sites(&cfg);
+    if all.is_empty() && cfg.proxies.is_empty() {
+        println!(
+            "No sites yet. Run `bird park` in your projects folder, or `bird link` in a project."
+        );
+        return Ok(());
+    }
+    let rows: Vec<Vec<String>> = all
+        .iter()
+        .map(|s| {
+            let php = match s.php_version(&cfg) {
+                Some((v, sites::PhpSource::Isolated)) => format!("{v} {}", dim("(isolated)")),
+                Some((v, sites::PhpSource::PhpVersionFile)) => {
+                    format!("{v} {}", dim("(.php-version)"))
+                }
+                Some((v, sites::PhpSource::Global)) => v,
+                None => yellow("none"),
+            };
+            let php = match s.php_version(&cfg) {
+                Some((v, _)) if !php::is_installed(&v) => {
+                    format!("{php} {}", yellow("not installed"))
+                }
+                _ => php,
+            };
+            let scheme = if s.secure {
+                green("https")
+            } else {
+                "http".into()
+            };
+            let kind = match s.kind {
+                SiteKind::Linked => "linked",
+                SiteKind::Parked => "parked",
+            };
+            vec![
+                format!("{scheme}://{}", cfg.domain(&s.name)),
+                php,
+                kind.into(),
+                s.path.display().to_string(),
+            ]
+        })
+        .collect();
+    ui::table(&["SITE", "PHP", "TYPE", "PATH"], &rows);
+    if !cfg.proxies.is_empty() {
+        println!();
+        let rows: Vec<Vec<String>> = cfg
+            .proxies
+            .iter()
+            .map(|(n, p)| {
+                let scheme = if p.secure {
+                    green("https")
+                } else {
+                    "http".into()
+                };
+                vec![format!("{scheme}://{}", cfg.domain(n)), p.upstream.clone()]
+            })
+            .collect();
+        ui::table(&["PROXY", "UPSTREAM"], &rows);
+    }
+    Ok(())
+}
+
+fn set_secure(name: Option<String>, secure: bool) -> Result<()> {
+    let mut cfg = Config::load()?;
+    let name = match name.as_deref().map(sites::slug) {
+        Some(n) if cfg.proxies.contains_key(&n) => {
+            cfg.proxies.get_mut(&n).unwrap().secure = secure;
+            cfg.save()?;
+            ui::ok(format!(
+                "{} {}",
+                cfg.domain(&n),
+                if secure {
+                    "redirects to HTTPS"
+                } else {
+                    "served over HTTP and HTTPS"
+                }
+            ));
+            return Ok(());
+        }
+        _ => target_site(&cfg, name)?,
+    };
+    cfg.site_mut(&name).secure = secure;
+    cfg.save()?;
+    if secure {
+        ui::ok(format!(
+            "https://{} (HTTP now redirects)",
+            cfg.domain(&name)
+        ));
+    } else {
+        ui::ok(format!(
+            "{} is served over both HTTP and HTTPS",
+            cfg.domain(&name)
+        ));
+    }
+    Ok(())
+}
+
+fn add_proxy(name: String, upstream: String, secure: bool) -> Result<()> {
+    proxy::parse_upstream(&upstream)?;
+    let name = sites::slug(&name);
+    let mut cfg = Config::load()?;
+    cfg.proxies.insert(
+        name.clone(),
+        ProxyConfig {
+            upstream: upstream.clone(),
+            secure,
+        },
+    );
+    cfg.save()?;
+    ui::ok(format!("https://{} → {upstream}", cfg.domain(&name)));
+    Ok(())
+}
+
+fn open(name: Option<String>) -> Result<()> {
+    let cfg = Config::load()?;
+    let name = target_site(&cfg, name)?;
+    let url = format!("https://{}", cfg.domain(&name));
+    std::process::Command::new("open").arg(&url).status()?;
+    Ok(())
+}
+
+/// Installs a PHP version if it isn't there yet.
+fn ensure_php(cfg: &Config, version: &str) -> Result<()> {
+    if !php::is_installed(version) {
+        println!("PHP {version} is not installed yet; installing…");
+        let full = php::install(cfg, version)?;
+        shim::refresh()?;
+        ui::ok(format!("installed PHP {full}"));
+    }
+    Ok(())
+}
+
+fn use_version(version: &str) -> Result<()> {
+    let version = php::require_normalized(version)?;
+    let mut cfg = Config::load()?;
+    ensure_php(&cfg, &version)?;
+    cfg.php = Some(version.clone());
+    cfg.save()?;
+    shim::refresh()?;
+    ui::ok(format!("global PHP is now {version}"));
+    Ok(())
+}
+
+fn isolate(version: &str, site: Option<String>) -> Result<()> {
+    let version = php::require_normalized(version)?;
+    let mut cfg = Config::load()?;
+    let name = target_site(&cfg, site)?;
+    ensure_php(&cfg, &version)?;
+    cfg.site_mut(&name).php = Some(version.clone());
+    cfg.save()?;
+    ui::ok(format!("{} uses PHP {version}", cfg.domain(&name)));
+    Ok(())
+}
+
+fn unisolate(site: Option<String>) -> Result<()> {
+    let mut cfg = Config::load()?;
+    let name = target_site(&cfg, site)?;
+    cfg.site_mut(&name).php = None;
+    cfg.save()?;
+    ui::ok(format!(
+        "{} uses the global PHP version again",
+        cfg.domain(&name)
+    ));
+    Ok(())
+}
+
+fn which_php() -> Result<()> {
+    let cfg = Config::load()?;
+    match php::resolve_for_dir(&cfg, &cwd()?) {
+        Some((v, why)) => {
+            let bin = paths().php_binary(&v);
+            println!("{}", bin.display());
+            let note = if bin.is_file() {
+                String::new()
+            } else {
+                format!(" — {}", yellow("not installed"))
+            };
+            eprintln!("{}", dim(&format!("PHP {v} ({why}){note}")));
+            Ok(())
+        }
+        None => bail!("no PHP version configured; run `bird use 8.4`"),
+    }
+}
+
+fn php_install(versions: &[String]) -> Result<()> {
+    let mut cfg = Config::load()?;
+    for v in versions {
+        let v = php::require_normalized(v)?;
+        let full = php::install(&cfg, &v)?;
+        ui::ok(format!("installed PHP {full}"));
+        if cfg.php.is_none() {
+            cfg.php = Some(v.clone());
+            cfg.save()?;
+            ui::ok(format!("global PHP is now {v}"));
+        }
+    }
+    shim::refresh()
+}
+
+fn php_list(available: bool) -> Result<()> {
+    let cfg = Config::load()?;
+    let installed = php::installed();
+    let remote = if available {
+        Some(php::available(&cfg)?)
+    } else {
+        None
+    };
+    let mut versions: Vec<String> = installed.iter().map(|i| i.minor.clone()).collect();
+    if let Some(r) = &remote {
+        versions.extend(r.keys().cloned());
+    }
+    versions.sort_by_key(|v| {
+        v.split('.')
+            .map(|p| p.parse::<u32>().unwrap_or(0))
+            .collect::<Vec<_>>()
+    });
+    versions.dedup();
+    if versions.is_empty() {
+        println!("No PHP versions installed. Install one with `bird php:install 8.4`.");
+        return Ok(());
+    }
+    let rows: Vec<Vec<String>> = versions
+        .iter()
+        .map(|v| {
+            let inst = installed.iter().find(|i| &i.minor == v);
+            let marker = if cfg.php.as_deref() == Some(v) {
+                green("● global")
+            } else {
+                String::new()
+            };
+            let mut row = vec![
+                v.clone(),
+                inst.map(|i| i.version.clone()).unwrap_or_else(|| dim("—")),
+                marker,
+            ];
+            if let Some(r) = &remote {
+                let latest = r.get(v).cloned().unwrap_or_default();
+                let update = match inst {
+                    Some(i) if !latest.is_empty() && i.version != latest => {
+                        yellow(&format!("{latest} available"))
+                    }
+                    _ => dim(&latest),
+                };
+                row.push(update);
+            }
+            row
+        })
+        .collect();
+    let mut header = vec!["PHP", "INSTALLED", ""];
+    if remote.is_some() {
+        header.push("LATEST");
+    }
+    ui::table(&header, &rows);
+    Ok(())
+}
+
+fn php_update(versions: &[String]) -> Result<()> {
+    let cfg = Config::load()?;
+    let targets: Vec<String> = if versions.is_empty() {
+        php::installed().into_iter().map(|i| i.minor).collect()
+    } else {
+        versions
+            .iter()
+            .map(|v| php::require_normalized(v))
+            .collect::<Result<_>>()?
+    };
+    let remote = php::available(&cfg)?;
+    let installed = php::installed();
+    let mut updated = Vec::new();
+    for v in targets {
+        let current = installed
+            .iter()
+            .find(|i| i.minor == v)
+            .map(|i| i.version.clone());
+        let Some(current) = current else {
+            ui::warn(format!("PHP {v} is not installed"));
+            continue;
+        };
+        match remote.get(&v) {
+            Some(latest) if *latest != current => {
+                let full = php::install(&cfg, &v)?;
+                ui::ok(format!("PHP {current} → {full}"));
+                updated.push(v);
+            }
+            _ => ui::ok(format!("PHP {current} is up to date")),
+        }
+    }
+    if !updated.is_empty() && control::is_running() {
+        for v in &updated {
+            let _ = control::send(json!({"cmd": "restart-php", "version": v}));
+        }
+    }
+    Ok(())
+}
+
+fn php_remove(version: &str) -> Result<()> {
+    let version = php::require_normalized(version)?;
+    let mut cfg = Config::load()?;
+    if control::is_running() {
+        let _ = control::send(json!({"cmd": "restart-php", "version": version}));
+    }
+    php::remove(&version)?;
+    if cfg.php.as_deref() == Some(version.as_str()) {
+        cfg.php = php::installed().last().map(|i| i.minor.clone());
+        cfg.save()?;
+        match &cfg.php {
+            Some(v) => ui::warn(format!("global PHP was {version}; it is now {v}")),
+            None => ui::warn("no PHP versions left; install one with `bird php:install 8.4`"),
+        }
+    }
+    shim::refresh()?;
+    ui::ok(format!("removed PHP {version}"));
+    Ok(())
+}
+
+fn ini(version: Option<String>, edit: bool) -> Result<()> {
+    let cfg = Config::load()?;
+    let version = match version {
+        Some(v) => php::require_normalized(&v)?,
+        None => php::resolve_for_dir(&cfg, &cwd()?)
+            .map(|(v, _)| v)
+            .context("no PHP version configured")?,
+    };
+    let path = paths().php_ini(&version);
+    if !path.exists() {
+        bail!("PHP {version} is not installed");
+    }
+    if edit {
+        let status = match std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")) {
+            Ok(editor) => std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("{editor} \"$1\""))
+                .arg("sh")
+                .arg(&path)
+                .status()?,
+            Err(_) => std::process::Command::new("open")
+                .arg("-t")
+                .arg(&path)
+                .status()?,
+        };
+        if status.success() && control::is_running() {
+            let _ = control::send(json!({"cmd": "restart-php", "version": version}));
+            ui::ok(format!(
+                "PHP {version} restarts with the new settings on the next request"
+            ));
+        }
+    } else {
+        println!("{}", path.display());
+    }
+    Ok(())
+}
+
+fn set_tld(tld: Option<String>) -> Result<()> {
+    let mut cfg = Config::load()?;
+    let Some(tld) = tld else {
+        println!("{}", cfg.tld);
+        return Ok(());
+    };
+    let tld = tld.trim_start_matches('.').to_ascii_lowercase();
+    if tld.is_empty() || !tld.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        bail!("the TLD must be a single label like `test`");
+    }
+    cfg.tld = tld.clone();
+    cfg.save()?;
+    ui::ok(format!("sites are now served as <name>.{tld}"));
+    if install::is_system_installed() {
+        println!("Updating /etc/resolver (needs sudo)…");
+        install::sudo_system_install()?;
+    }
+    Ok(())
+}
+
+fn logs(which: Option<String>, follow: bool) -> Result<()> {
+    let path = match which.as_deref() {
+        None | Some("bird") | Some("daemon") => paths().daemon_log(),
+        Some(v) => paths().fpm_log(&php::require_normalized(v)?),
+    };
+    if !Path::new(&path).exists() {
+        bail!("{} does not exist yet", path.display());
+    }
+    use std::os::unix::process::CommandExt;
+    let mut cmd = std::process::Command::new("tail");
+    cmd.arg("-n").arg("100");
+    if follow {
+        cmd.arg("-F");
+    }
+    Err(cmd.arg(&path).exec()).context("could not run tail")
+}

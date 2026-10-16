@@ -1,0 +1,36 @@
+[package]
+name = "bird"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+bytes = "1.12.1"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+flate2 = "1.1.10"
+futures-util = "0.3.34"
+http = "1.5.0"
+http-body = "1"
+http-body-util = { version = "0.1.5", features = ["channel"] }
+hyper = { version = "1.12.0", features = ["server", "client", "http1", "http2"] }
+hyper-util = { version = "0.1.21", features = ["tokio", "server-auto", "server-graceful", "client-legacy", "http1", "http2"] }
+libc = "0.2.190"
+rcgen = { version = "0.14.10", features = ["pem", "ring", "x509-parser"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "rustls-no-provider"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tar = "0.4.46"
+time = "0.3.55"
+tokio = { version = "1.53.3", features = ["full"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "logging", "tls12"] }
+toml = "1.1.8"
+tower = { version = "0.5.3", features = ["util"] }
+tower-http = { version = "0.7.1", features = ["fs"] }
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+x509-parser = "0.18"
+
+[profile.release]
+lto = "thin"
+strip = true
