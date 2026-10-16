@@ -1,4 +1,8 @@
 # Extensions built as loadable .so files next to the binaries (not enabled by
 # default). Xdebug can only be built shared; on macOS the php binary is not
 # fully static (it links libSystem dynamically), so it can dlopen these.
+# Same optional version field as extensions.txt.
 xdebug
+# Code coverage for tests; much faster than Xdebug's, but it slows every
+# request when loaded, so it stays opt-in.
+pcov

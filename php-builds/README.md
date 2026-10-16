@@ -8,12 +8,31 @@ load Xdebug.
 | File | Purpose |
 | --- | --- |
 | `extensions.txt` | Extensions compiled into `php` and `php-fpm` |
-| `shared-extensions.txt` | Extensions built as loadable `.so` files (Xdebug) |
+| `shared-extensions.txt` | Extensions built as loadable `.so` files (Xdebug, PCOV) |
 | `libs.txt` | Extra libraries (gd: FreeType, JPEG, WebP) |
-| `sources.txt` | Pinned PECL sources (otherwise spc takes the newest, even alphas) |
+| `sources.txt` | Pinned PECL sources with sha256 (otherwise spc takes the newest, even alphas) |
 | `build.sh` | Builds, tests and packages one PHP version on the current Mac |
 | `manifest.py` | Resolves versions from php.net; merges build metadata into `manifest.json` |
 | `../.github/workflows/php-builds.yml` | Builds PHP 8.1–8.5 × macOS arm64/x86_64 and publishes them |
+
+## Extensions
+
+`extensions.txt` matches what Laravel Herd ships for PHP 8.3–8.5 (compared
+against Herd's `php -m`), which covers Laravel's own requirements (ctype,
+curl, dom, fileinfo, filter, mbstring, openssl, pdo, session, tokenizer, xml)
+and what common packages expect: intl, gd, imagick, bcmath, redis, mongodb,
+ldap, imap, sqlsrv, sodium, zip, … plus apcu. Xdebug and PCOV are built as
+shared extensions and stay off until enabled.
+
+Lines in `extensions.txt`, `shared-extensions.txt` and `sources.txt` can end
+in a PHP version condition (`>=8.3` or `<8.3`):
+
+- `imap` is only built for 8.3+: PHP 8.4 moved it to PECL, and the PECL
+  release needs 8.3+.
+- `sqlsrv`/`pdo_sqlsrv` 5.13 need 8.3+; 8.1 and 8.2 get 5.12.
+
+`sqlsrv`/`pdo_sqlsrv` also need Microsoft's ODBC driver at runtime
+(`brew install msodbcsql18`), as with any PHP build.
 
 ## Building locally
 

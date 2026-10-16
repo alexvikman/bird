@@ -1,23 +1,36 @@
 # Extensions compiled statically into php and php-fpm.
-# One per line; blank lines and comments are ignored.
-# Roughly the set Laravel Herd ships, i.e. what a typical Laravel app needs.
+# One per line; blank lines and comments are ignored. An optional second
+# field limits a line to some PHP versions: `>=8.3` or `<8.3`.
+#
+# The set Laravel Herd ships (checked against Herd's php -m for 8.3–8.5),
+# which covers Laravel's requirements (ctype, curl, dom, fileinfo, filter,
+# mbstring, openssl, pdo, session, tokenizer, xml) and the extensions popular
+# packages expect, plus apcu.
 bcmath
 bz2
 calendar
 ctype
 curl
+dba
 dom
 exif
+ffi
 fileinfo
 filter
 ftp
 gd
+gettext
 gmp
 iconv
 igbinary
+imagick
+# Moved out of php-src to PECL in 8.4; the PECL release needs PHP 8.3+.
+imap        >=8.3
 intl
+ldap
 mbregex
 mbstring
+mongodb
 mysqli
 mysqlnd
 opcache
@@ -27,17 +40,24 @@ pdo
 pdo_mysql
 pdo_pgsql
 pdo_sqlite
+# SQL Server: needs Microsoft's ODBC driver at runtime (brew: msodbcsql18).
+pdo_sqlsrv
 pgsql
 phar
 posix
 readline
 redis
 session
+shmop
 simplexml
 soap
 sockets
 sodium
 sqlite3
+sqlsrv
+sysvmsg
+sysvsem
+sysvshm
 tokenizer
 xml
 xmlreader
@@ -46,3 +66,5 @@ xsl
 zip
 zlib
 zstd
+# Not in Herd, but a common cache for Laravel/Symfony.
+apcu

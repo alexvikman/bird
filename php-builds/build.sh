@@ -38,8 +38,34 @@ out="$here/dist"
 die() { echo "error: $*" >&2; exit 1; }
 log() { printf '\n==> %s\n' "$*" >&2; }
 
-# Reads a list file: one item per line, '#' comments and blank lines ignored.
-read_list() { sed -e 's/#.*//' -e 's/[[:space:]]//g' "$1" | grep -v '^$' || true; }
+# Whether PHP $minor satisfies a condition from a list file: "" (always),
+# ">=8.3" or "<8.3". (sed, not head: head exiting early would SIGPIPE sort
+# and fail under pipefail.)
+applies() {
+    local cond="$1" ver lowest
+    case "$cond" in
+        "") return 0 ;;
+        ">="*) ver="${cond#>=}" ;;
+        "<"*) ver="${cond#<}" ;;
+        *) die "bad PHP version condition '$cond'" ;;
+    esac
+    [[ "$ver" =~ ^[0-9]+\.[0-9]+$ ]] || die "bad PHP version condition '$cond'"
+    lowest="$(printf '%s\n%s\n' "$minor" "$ver" | sort -V | sed -n 1p)"
+    case "$cond" in
+        ">="*) [ "$lowest" = "$ver" ] ;;
+        *) [ "$lowest" = "$minor" ] && [ "$minor" != "$ver" ] ;;
+    esac
+}
+
+# Reads a list file: one item per line, '#' comments and blank lines ignored,
+# optionally followed by a PHP version condition (see applies).
+read_list() {
+    local name cond
+    while read -r name cond; do
+        [ -n "$name" ] || continue
+        if applies "$cond"; then echo "$name"; fi
+    done < <(sed -e 's/#.*//' "$1")
+}
 join_commas() { paste -sd, -; }
 
 version=""
@@ -76,6 +102,14 @@ else
     die "'$version' is not a PHP version (expected e.g. 8.4 or 8.4.26)"
 fi
 minor="${full%.*}"
+
+# PHP before 8.4 predates C23 (8.1's bcmath still has K&R function
+# definitions), but autoconf 2.72 picks -std=gnu23 whenever the compiler
+# supports it. spc puts these flags last on the compiler command line, so the
+# -std here wins. (spc reads its env.ini settings from the environment.)
+if ! applies ">=8.4"; then
+    export SPC_CMD_VAR_PHP_MAKE_EXTRA_CFLAGS="-g -fstack-protector-strong -fpic -fpie -Werror=unknown-warning-option --target=$(uname -m)-apple-darwin -Os -std=gnu17"
+fi
 
 static_exts="$(read_list "$here/extensions.txt" | join_commas)"
 shared_exts="$(read_list "$here/shared-extensions.txt" | join_commas)"
@@ -117,11 +151,16 @@ log "spc doctor"
 
 log "Downloading sources"
 download_flags=(--retry=3)
-while read -r name url sha; do
+# The pins that apply to this PHP version, for spc and for verification.
+sources="$build_dir/sources.applied"
+: > "$sources"
+while read -r name url sha cond; do
     [ -n "$name" ] || continue
     [ -n "$sha" ] || die "sources.txt: $name has no sha256"
+    applies "$cond" || continue
+    printf '%s %s %s\n' "$name" "$url" "$sha" >> "$sources"
     download_flags+=(-U "$name:$url")
-done < <(sed -e 's/#.*//' "$here/sources.txt" | grep -v '^[[:space:]]*$')
+done < <(sed -e 's/#.*//' "$here/sources.txt")
 [ "${SPC_PREBUILT:-}" = "1" ] && download_flags+=(--prefer-pre-built)
 "$spc" download --with-php="$full" --for-extensions="$all_exts" --for-libs="$libs" \
     --ignore-cache-sources=php-src "${download_flags[@]}" ${spc_flags[@]+"${spc_flags[@]}"}
@@ -132,7 +171,7 @@ done < <(sed -e 's/#.*//' "$here/sources.txt" | grep -v '^[[:space:]]*$')
 # trusted as spc configures them.)
 log "Verifying sources"
 release_json="$(curl -fsSL "https://www.php.net/releases/index.php?json&version=$full")"
-python3 -I - "$build_dir/downloads" "$here/sources.txt" "$release_json" <<'PY'
+python3 -I - "$build_dir/downloads" "$sources" "$release_json" <<'PY'
 import hashlib, json, os, sys
 
 downloads, sources_txt, release_json = sys.argv[1:4]
