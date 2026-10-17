@@ -191,6 +191,13 @@ enum Command {
         #[arg(long)]
         https_port: Option<u16>,
     },
+    /// Print everything about this Bird as JSON (used by the menu bar app)
+    #[command(hide = true)]
+    State {
+        /// Also list the PHP versions available for download (needs network)
+        #[arg(long)]
+        available: bool,
+    },
     #[command(hide = true)]
     SystemInstall {
         #[arg(long)]
@@ -278,6 +285,7 @@ pub fn main() -> Result<()> {
             http_port,
             https_port,
         } => crate::daemon::run(http_port, https_port),
+        Command::State { available } => state(available),
         Command::SystemInstall { user, group, home } => {
             install::system_install(&user, &group, &home)
         }
@@ -476,6 +484,112 @@ fn unlink(name: Option<String>) -> Result<()> {
     // Leftover pins/secure flags stay in case it's also a parked site; save() drops empty entries.
     cfg.save()?;
     ui::ok(format!("unlinked {}", cfg.domain(&name)));
+    Ok(())
+}
+
+/// Machine-readable state for the menu bar app. Works with the daemon
+/// stopped (then `daemon` is null); actions go through the normal commands.
+fn state(available: bool) -> Result<()> {
+    use crate::config::XdebugMode;
+    let cfg = Config::load()?;
+    let daemon = control::send(json!({"cmd": "status"})).ok();
+    let scheme = |secure: bool| if secure { "https" } else { "http" };
+    let installed = php::installed();
+    let sites: Vec<serde_json::Value> = sites::all_sites(&cfg)
+        .into_iter()
+        .map(|s| {
+            let (php_version, php_source) = match s.php_version(&cfg) {
+                Some((v, sites::PhpSource::Isolated)) => (Some(v), "isolated"),
+                Some((v, sites::PhpSource::PhpVersionFile)) => (Some(v), "php-version-file"),
+                Some((v, sites::PhpSource::Global)) => (Some(v), "global"),
+                None => (None, "none"),
+            };
+            let domain = cfg.domain(&s.name);
+            json!({
+                "name": s.name,
+                "domain": domain,
+                // HTTPS always works; `secure` only adds the HTTP redirect.
+                "url": format!("https://{domain}"),
+                "path": s.path,
+                "kind": match s.kind { SiteKind::Linked => "linked", SiteKind::Parked => "parked" },
+                "secure": s.secure,
+                "php": php_version,
+                "php_source": php_source,
+                "php_installed": php_version.as_deref().is_some_and(php::is_installed),
+            })
+        })
+        .collect();
+    let proxies: Vec<serde_json::Value> = cfg
+        .proxies
+        .iter()
+        .map(|(name, p)| {
+            let domain = cfg.domain(name);
+            json!({
+                "name": name,
+                "domain": domain,
+                "url": format!("{}://{domain}", scheme(true)),
+                "upstream": p.upstream,
+                "secure": p.secure,
+            })
+        })
+        .collect();
+    // Remote builds only when asked: it fetches the manifest.
+    let remote = if available {
+        Some(php::available_builds(&cfg))
+    } else {
+        None
+    };
+    let source = php::mirror_source(&cfg);
+    let versions: Vec<serde_json::Value> = installed
+        .iter()
+        .map(|i| {
+            let latest = remote
+                .as_ref()
+                .and_then(|r| r.as_ref().ok())
+                .and_then(|r| r.get(&i.minor));
+            json!({
+                "minor": i.minor,
+                "version": i.version,
+                "source": i.source,
+                "xdebug": php::has_xdebug(&i.minor),
+                "update": latest.filter(|l| i.outdated(l, source)).map(|l| l.version.clone()),
+            })
+        })
+        .collect();
+    let (php_available, available_error) = match &remote {
+        Some(Ok(r)) => (
+            Some(
+                r.iter()
+                    .map(|(minor, b)| json!({"minor": minor, "version": b.version}))
+                    .collect::<Vec<_>>(),
+            ),
+            None,
+        ),
+        Some(Err(e)) => (None, Some(format!("{e:#}"))),
+        None => (None, None),
+    };
+    let out = json!({
+        "bird_version": env!("CARGO_PKG_VERSION"),
+        "bird_home": paths().home,
+        "log": paths().daemon_log(),
+        "service_installed": install::is_system_installed(),
+        "daemon": daemon,
+        "tld": cfg.tld,
+        "php": cfg.php,
+        "opcache": cfg.opcache,
+        "xdebug": match cfg.xdebug {
+            XdebugMode::Auto => "auto",
+            XdebugMode::On => "on",
+            XdebugMode::Off => "off",
+        },
+        "php_versions": versions,
+        "php_available": php_available,
+        "php_available_error": available_error,
+        "paths": cfg.paths,
+        "sites": sites,
+        "proxies": proxies,
+    });
+    println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
 }
 
