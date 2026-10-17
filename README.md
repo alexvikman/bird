@@ -57,6 +57,27 @@ bird php …  | bird composer …
 bird import herd [--install-php]
 ```
 
+## Menu bar app
+
+`app/` holds Bird's macOS app (SwiftUI):
+
+- **Menu bar menu** for the quick things: status, open a site, restart Bird or
+  PHP, start/stop Bird, switch the global PHP version (⌘1…), opcache, Xdebug.
+- **Bird window** (⌘O) to manage everything else: sites (PHP version per
+  site, HTTPS redirect, open in browser/Finder/Terminal, link and unlink),
+  proxies, parked folders, PHP versions (install, update, remove, make
+  global) and settings (including `bird doctor`).
+
+It reads `bird state` and makes every change through the normal `bird`
+commands, so it never edits Bird's files itself.
+
+```bash
+app/build.sh --install   # builds Bird.app into ~/Applications and starts it
+```
+
+Needs the Xcode command line tools (no Xcode). The app is signed ad hoc, which
+is enough on your own Mac; "Open menu bar app at login" is in Settings.
+
 ## Files
 
 ```
