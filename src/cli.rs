@@ -41,6 +41,12 @@ enum Command {
     },
     /// Check that everything is wired up correctly
     Doctor,
+    /// Update Bird (and Bird.app) to the latest release
+    SelfUpdate {
+        /// Only check whether a newer release exists
+        #[arg(long)]
+        check: bool,
+    },
     /// Show the daemon state and running PHP pools
     Status,
     /// Start the background service
@@ -220,6 +226,7 @@ pub fn main() -> Result<()> {
         Command::Install { user_only, php } => install::install(user_only, php),
         Command::Uninstall { purge } => install::uninstall(purge),
         Command::Doctor => install::doctor(),
+        Command::SelfUpdate { check } => crate::update::self_update(check),
         Command::Status => status(),
         Command::Start => install::start(),
         Command::Stop => install::stop(),

@@ -1,22 +1,34 @@
 # Bird
 
 Local PHP development without the bloat: `*.test` domains, HTTPS and several
-PHP versions side by side. One Rust binary, a CLI, and nothing else.
+PHP versions side by side. One Rust binary with a CLI, plus an optional menu
+bar app on macOS. Runs on macOS and Linux.
+
+## Install
+
+Download `bird-<version>-<target>.tar.gz` for your platform from the
+[latest release](https://github.com/alexvikman/bird/releases/latest), check it
+against `SHA256SUMS` (or `gh attestation verify <file> -R alexvikman/bird`),
+unpack it and run:
 
 ```bash
-bird install            # CA, latest PHP, Composer, DNS resolver, launchd service (asks for sudo once)
+./bird install          # CA, latest PHP, Composer, DNS, background service (asks for sudo once)
 cd ~/Code && bird park  # every folder in ~/Code is now <folder>.test
 cd my-app && bird isolate 8.3
 ```
+
+`bird self-update` installs new releases (and updates Bird.app); `bird
+self-update --check` only looks. From source: `cargo build --release &&
+./target/release/bird install`.
 
 ## How it works
 
 | Piece | Bird |
 |---|---|
-| DNS | Built-in DNS server on `127.0.0.1:53535`; `/etc/resolver/test` points macOS at it. No dnsmasq. |
+| DNS | Built-in DNS server on `127.0.0.1:53535`. On macOS `/etc/resolver/test` points at it; on Linux a systemd-resolved drop-in routes `~test` to it. No dnsmasq. |
 | Web server | Built-in HTTP/1.1 + HTTP/2 server (hyper + rustls). Static files are served directly, PHP goes to PHP-FPM over FastCGI. No nginx, no config to regenerate. |
-| HTTPS | A local CA (trusted once at install) issues a certificate the first time a hostname is requested. Every site and subdomain works over HTTPS. The CA is name-constrained to the TLD (and no IP addresses), so even a leaked key can't impersonate real domains; `bird tld` replaces it. |
-| Ports 80/443 | launchd binds them as root and hands the sockets to the daemon, which runs as you. No privileged helper stays running. |
+| HTTPS | A local CA (trusted once at install) issues a certificate the first time a hostname is requested. Every site and subdomain works over HTTPS. The CA is name-constrained to the TLD (and no IP addresses), so even a leaked key can't impersonate real domains; `bird tld` replaces it. On Linux it goes into the system trust store and Chrome/Firefox's NSS stores (needs `certutil`). |
+| Ports 80/443 | macOS: launchd binds them as root and hands the sockets to the daemon, which runs as you. Linux: a systemd service runs the daemon as you with only `CAP_NET_BIND_SERVICE`, which it drops right after binding. No privileged helper stays running. |
 | PHP | Bird's own static builds ([php-builds/](php-builds/), made with [static-php-cli](https://static-php.dev)), checked against sha256 sums from the release manifest, in `~/.bird/php/<version>`. One FPM pool per version, started on first request and stopped when idle. |
 | CLI | `~/.bird/bin/php`, `php8.4` and `composer` are shims that pick the same PHP version the site is served with. |
 

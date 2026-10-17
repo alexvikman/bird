@@ -168,7 +168,7 @@ pub fn mirror_source(cfg: &Config) -> &'static str {
     }
 }
 
-fn http() -> Result<reqwest::blocking::Client> {
+pub(crate) fn http() -> Result<reqwest::blocking::Client> {
     Ok(reqwest::blocking::Client::builder()
         .user_agent(concat!("bird/", env!("CARGO_PKG_VERSION")))
         .build()?)
@@ -606,7 +606,7 @@ pub fn remove(minor: &str) -> Result<()> {
     Ok(())
 }
 
-fn download(url: &str, label: &str) -> Result<Vec<u8>> {
+pub(crate) fn download(url: &str, label: &str) -> Result<Vec<u8>> {
     let mut resp = http()?
         .get(url)
         .send()
@@ -643,7 +643,7 @@ fn download(url: &str, label: &str) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-fn extract_binary(archive: &[u8], name: &str, dest: &Path) -> Result<()> {
+pub(crate) fn extract_binary(archive: &[u8], name: &str, dest: &Path) -> Result<()> {
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
     for entry in tar.entries()? {
         let mut entry = entry?;

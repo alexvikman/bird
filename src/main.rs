@@ -16,6 +16,7 @@ mod shim;
 mod sites;
 mod tls;
 mod ui;
+mod update;
 
 fn main() {
     let _ = rustls::crypto::ring::default_provider().install_default();
