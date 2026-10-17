@@ -105,7 +105,7 @@ is enough on your own Mac; "Open menu bar app at login" is in Settings.
 ~/.bird/bin/          bird + shims — put this first on PATH
 ~/.bird/php/8.4/      bin/php, bin/php-fpm, php.ini, conf.d/
 ~/.bird/ca/           local certificate authority
-~/.bird/log/          bird.log, php-8.4-fpm.log (each kept under 10 MB, plus one .1)
+~/.bird/log/          bird.log, php-8.4-fpm.log (rotated at 10 MB; 5 gzipped generations kept)
 ```
 
 Set `BIRD_HOME` to use another directory (handy for testing:
