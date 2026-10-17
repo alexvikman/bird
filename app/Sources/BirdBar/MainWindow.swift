@@ -20,10 +20,45 @@ enum Pane: String, CaseIterable, Identifiable {
         switch self {
         case .sites: "globe"
         case .proxies: "arrow.left.arrow.right"
-        case .folders: "folder"
+        case .folders: "folder.fill"
         case .php: "chevron.left.forwardslash.chevron.right"
-        case .settings: "gearshape"
-        case .about: "info.circle"
+        case .settings: "gearshape.fill"
+        case .about: "info"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .sites: .blue
+        case .proxies: .indigo
+        case .folders: .cyan
+        case .php: Color(red: 0.47, green: 0.48, blue: 0.70)  // PHP's own purple
+        case .settings: .gray
+        case .about: .gray
+        }
+    }
+}
+
+/// A white symbol on a colored rounded square, like System Settings; About
+/// shows the app icon.
+struct PaneIcon: View {
+    let pane: Pane
+
+    var body: some View {
+        if pane == .about {
+            // The icon has transparent margins (the macOS icon grid); crop
+            // them so it lines up with the squares.
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: 27, height: 27)
+                .frame(width: 22, height: 22)
+        } else {
+            Image(systemName: pane.icon)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 22, height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous).fill(pane.color.gradient))
         }
     }
 }
@@ -41,7 +76,7 @@ struct MainWindow: View {
     var body: some View {
         NavigationSplitView {
             List(Pane.allCases, selection: selection) { pane in
-                Label(pane.title, systemImage: pane.icon).tag(pane)
+                Label { Text(pane.title) } icon: { PaneIcon(pane: pane) }.tag(pane)
             }
             .navigationSplitViewColumnWidth(min: 160, ideal: 180)
             .safeAreaInset(edge: .bottom) {
@@ -86,6 +121,8 @@ struct MainWindow: View {
                     .background(Color.red.opacity(0.08))
                 }
             }
+            // White behind the content (like System Settings), not the window's grey.
+            .background(Color(nsColor: .textBackgroundColor))
             .toolbar {
                 ToolbarItem(placement: .status) {
                     if let activity = model.activity {
@@ -755,6 +792,7 @@ struct AboutPane: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
         .navigationTitle("About")
     }
 
@@ -836,6 +874,7 @@ struct SettingsPane: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
         .navigationTitle("Settings")
     }
 }
