@@ -230,10 +230,12 @@ pub fn self_update(check_only: bool) -> Result<()> {
     Ok(())
 }
 
+/// The Bird.app to update: the one in /Applications, else one in
+/// ~/Applications (where earlier versions of build.sh installed it).
 fn installed_app() -> Option<PathBuf> {
     [
-        user_home().join("Applications/Bird.app"),
         PathBuf::from("/Applications/Bird.app"),
+        user_home().join("Applications/Bird.app"),
     ]
     .into_iter()
     .find(|p| p.join("Contents/MacOS/Bird").is_file())

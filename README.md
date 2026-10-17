@@ -87,8 +87,11 @@ bird import herd [--install-php]
 It reads `bird state` and makes every change through the normal `bird`
 commands, so it never edits Bird's files itself.
 
+Releases include Bird.app: unzip it into /Applications, and `bird self-update`
+keeps it up to date there. To build it yourself:
+
 ```bash
-app/build.sh --install   # builds Bird.app into ~/Applications and starts it
+app/build.sh   # builds app/build/Bird.app; move it to /Applications to use it
 ```
 
 Needs the Xcode command line tools (no Xcode). The app is signed ad hoc, which
