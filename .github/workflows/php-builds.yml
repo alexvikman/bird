@@ -2,7 +2,11 @@
 # static-php-cli and publishes them to the rolling `php` GitHub Release,
 # together with manifest.json. See php-builds/README.md.
 #
-# Hardening: runs only on manual dispatch (never on pull requests), the token
+# Runs on manual dispatch and weekly (Mondays 04:00 UTC). The weekly run only
+# builds what the published manifest.json lacks: new PHP patch releases, and
+# every version again when the build files changed (see `manifest.py recipe`).
+#
+# Hardening: never runs on pull requests or other events from forks, the token
 # is read-only except in the publish job, inputs reach shells only through env,
 # checkout keeps no credentials, and every action is pinned to a commit SHA
 # (Dependabot keeps the pins current).
@@ -23,14 +27,16 @@ on:
         description: Use spc's pre-built static libraries (faster, but trusts spc's binaries)
         type: boolean
         default: false
+      only-missing:
+        description: Skip builds already published with the current build files
+        type: boolean
+        default: false
       publish:
         description: Upload to the `php` release and update manifest.json
         type: boolean
         default: false
-  # TODO: a weekly run that picks up new patch releases. It needs a check that
-  # skips versions already in manifest.json before it can publish unattended.
-  # schedule:
-  #   - cron: "0 4 * * 1"
+  schedule:
+    - cron: "0 4 * * 1"
 
 permissions:
   contents: read
@@ -44,6 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
+      count: ${{ steps.plan.outputs.count }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -51,25 +58,34 @@ jobs:
 
       - id: plan
         env:
-          VERSIONS: ${{ inputs.versions }}
-          PLATFORMS: ${{ inputs.platforms }}
+          # Scheduled runs have no inputs: all supported versions, only what is
+          # missing from the release, and publish (see the publish job).
+          VERSIONS: ${{ inputs.versions || '8.1,8.2,8.3,8.4,8.5' }}
+          PLATFORMS: ${{ inputs.platforms || 'macos-aarch64,macos-x86_64' }}
+          ONLY_MISSING: ${{ github.event_name == 'schedule' || inputs.only-missing }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          versions="$(python3 php-builds/manifest.py resolve "$VERSIONS")"
-          # TODO(linux): linux-x86_64 / linux-aarch64 (ubuntu-24.04, ubuntu-24.04-arm),
+          skip=()
+          if [ "$ONLY_MISSING" = "true" ]; then
+            mkdir -p published
+            # No release yet means nothing to skip.
+            if gh release download "$RELEASE_TAG" --pattern manifest.json --dir published; then
+              skip=(--skip-published published/manifest.json)
+            fi
+          fi
+          # TODO(linux): linux-x86_64 / linux-aarch64 runners in manifest.py,
           # once build.sh supports spc's Docker builds.
-          matrix="$(jq -cn --argjson versions "$versions" --arg platforms "$PLATFORMS" '
-            {"macos-aarch64": "macos-15", "macos-x86_64": "macos-15-intel"} as $runners
-            | ($platforms | split(",") | map(gsub("\\s"; "")) | map(select(. != ""))) as $platforms
-            | ($platforms - ($runners | keys)) as $unknown
-            | if ($unknown | length) > 0 then error("unknown platform(s): \($unknown | join(", "))") else . end
-            | {include: [$versions[] as $php | $platforms[] as $platform
-                | {php: $php, platform: $platform, runner: $runners[$platform]}]}')"
+          matrix="$(python3 php-builds/manifest.py matrix "$VERSIONS" "$PLATFORMS" "${skip[@]}")"
           echo "$matrix" | jq .
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "count=$(jq '.include | length' <<<"$matrix")" >> "$GITHUB_OUTPUT"
 
   build:
     name: PHP ${{ matrix.php }} (${{ matrix.platform }})
     needs: plan
+    # Nothing new (the usual weekly case): skip the build, and with it publish.
+    if: needs.plan.outputs.count != '0'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
     strategy:
@@ -112,7 +128,7 @@ jobs:
   publish:
     name: Publish release
     needs: build
-    if: inputs.publish
+    if: github.event_name == 'schedule' || inputs.publish
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -315,11 +315,12 @@ shared_versions="$(
         printf '%s=%s\n' "$ext" "$("$php" -n -d "$flag" -r "echo phpversion('$ext');")"
     done
 )"
+recipe="$(python3 -I "$here/manifest.py" recipe)"
 python3 -I - "$out" "$full" "$minor" "$platform" "$SPC_VERSION" "$static_exts" "$shared_versions" \
-    "$build_dir/downloads/.lock.json" <<'PY'
+    "$build_dir/downloads/.lock.json" "$recipe" <<'PY'
 import hashlib, json, os, sys
 
-out, full, minor, platform, spc_version, static_exts, shared, lock = sys.argv[1:9]
+out, full, minor, platform, spc_version, static_exts, shared, lock, recipe = sys.argv[1:10]
 
 def entry(name):
     path = os.path.join(out, name)
@@ -337,6 +338,8 @@ build = {
     "minor": minor,
     "platform": platform,
     "spc_version": spc_version,
+    # Which build files made this build; see manifest.py recipe.
+    "recipe": recipe,
     "cli": entry(f"php-{full}-cli-{platform}.tar.gz"),
     "fpm": entry(f"php-{full}-fpm-{platform}.tar.gz"),
     "extensions": static_exts.split(","),

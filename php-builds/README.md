@@ -103,6 +103,25 @@ gh workflow run php-builds.yml -f versions=8.4 -f publish=true
 `publish` defaults to false, so a run without it only builds and keeps the
 archives as workflow artifacts.
 
+### Weekly run
+
+Every Monday at 04:00 UTC the workflow runs on its own and publishes. It only
+builds what the published `manifest.json` lacks: a new PHP patch release, or
+every version when the build files changed. Each build records a **recipe id**
+(`manifest.py recipe`, a hash of `build.sh`, the list files and the pins), and
+a published build only counts as current with the same recipe. So adding an
+extension or bumping a pin rebuilds everything the next Monday; a week with no
+new PHP releases builds nothing and finishes in seconds.
+
+Manual runs can do the same with `only-missing`:
+
+```bash
+gh workflow run php-builds.yml -f only-missing=true -f publish=true
+```
+
+GitHub disables scheduled workflows in public repositories after 60 days
+without activity in the repository; re-enable it in the Actions tab.
+
 ### Archives
 
 | Name | Contains |
@@ -135,6 +154,7 @@ extracting it.
       "minor": "8.4",
       "platform": "macos-aarch64",
       "spc_version": "2.8.5",
+      "recipe": "2c5cfed08ac3377c",
       "cli": { "file": "php-8.4.26-cli-macos-aarch64.tar.gz", "sha256": "…", "size": 21474836 },
       "fpm": { "file": "php-8.4.26-fpm-macos-aarch64.tar.gz", "sha256": "…", "size": 21474836 },
       "extensions": ["bcmath", "bz2", "…"],
@@ -160,6 +180,7 @@ extracting it.
   `opcache` shows up as "Zend OPcache" in `php -m`).
 - `shared_extensions`: optional add-ons, keyed by extension name.
 - `sources`: archives spc downloaded, for provenance only.
+- `recipe`: id of the build files that made this build (see "Weekly run").
 
 Installing PHP `8.4` on `macos-aarch64`, then, is:
 
@@ -174,8 +195,6 @@ Installing PHP `8.4` on `macos-aarch64`, then, is:
 
 - Linux builds (`linux-x86_64`, `linux-aarch64`): needs spc's Docker builds in
   `build.sh`; glibc for Xdebug.
-- A scheduled run that picks up new patch releases automatically (commented
-  out in the workflow; it should skip versions already in the manifest).
 - Signing/notarization. Bird downloads the archives itself, so they carry no
   quarantine attribute and Gatekeeper does not check them; the linker's ad-hoc
   signature is enough to run on Apple Silicon.
