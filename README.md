@@ -126,6 +126,27 @@ Adding one: append a `Migration` with the next id (`YYYY_MM_DD_NNNNNN_name`)
 to `MIGRATIONS`. Make it idempotent, never change a released one, and add a
 test.
 
+Releases are signed. The release workflow signs `SHA256SUMS` with Bird's
+release key (`ssh-keygen -Y sign -n bird-release`, Ed25519) into
+`SHA256SUMS.sig`, and `bird self-update` only installs a release whose
+signature matches a public key compiled into the running binary
+(`RELEASE_KEYS` in `src/signing.rs`) and whose files match `SHA256SUMS`. The
+private key is a secret of the `release` environment, which needs the owner's
+approval, so pushing a tag or editing a release can't produce an update Bird
+accepts. The release key is
+
+```text
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAII5iuep2RhMNGoxLgz+sc8qaXQ9as6/ZcDCzVpJPXVyn bird-release
+```
+
+and a download can be checked by hand with:
+
+```bash
+echo "bird-release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAII5iuep2RhMNGoxLgz+sc8qaXQ9as6/ZcDCzVpJPXVyn" > allowed_signers
+ssh-keygen -Y verify -f allowed_signers -I bird-release -n bird-release -s SHA256SUMS.sig < SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS   # macOS: shasum -a 256 -c --ignore-missing SHA256SUMS
+```
+
 ## Development
 
 ```bash

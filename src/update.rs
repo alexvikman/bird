@@ -155,12 +155,29 @@ pub fn self_update(check_only: bool) -> Result<()> {
     let sums_asset = release
         .asset("SHA256SUMS")
         .context("the release has no SHA256SUMS")?;
-    let sums = php::http()?
-        .get(&sums_asset.browser_download_url)
-        .send()
-        .and_then(|r| r.error_for_status())
-        .and_then(|r| r.text())
-        .context("could not download SHA256SUMS")?;
+    let fetch = |asset: &Asset| {
+        php::http()?
+            .get(&asset.browser_download_url)
+            .send()
+            .and_then(|r| r.error_for_status())
+            .and_then(|r| r.text())
+            .with_context(|| format!("could not download {}", asset.name))
+    };
+    let sums = fetch(sums_asset)?;
+    // SHA256SUMS only counts if it carries a signature from a key compiled
+    // into Bird; the checksums then vouch for every file below.
+    let sig_asset = release
+        .asset("SHA256SUMS.sig")
+        .context("the release is not signed (no SHA256SUMS.sig); not installing it")?;
+    let sig = fetch(sig_asset)?;
+    crate::signing::verify(
+        sums.as_bytes(),
+        &sig,
+        crate::signing::NAMESPACE,
+        crate::signing::RELEASE_KEYS,
+    )
+    .context("the release signature is not valid; not installing it")?;
+    ui::ok("release signature verified");
 
     // The bird binary.
     let archive = download_checked(

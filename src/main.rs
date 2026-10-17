@@ -14,6 +14,7 @@ mod php;
 mod proxy;
 mod server;
 mod shim;
+mod signing;
 mod sites;
 mod tls;
 mod ui;
