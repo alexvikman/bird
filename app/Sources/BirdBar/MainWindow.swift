@@ -700,7 +700,8 @@ struct UpdatesSection: View {
                     Button("Release Notes") { model.open(url) }
                         .buttonStyle(.link)
                 }
-                Button(model.updating ? "Updating…" : "Update Now") { model.installUpdate() }
+                // Through the same dialog as the menu: notes, then Install / Later / Skip.
+                Button(model.updating ? "Updating…" : "Update…") { model.presentUpdate() }
                     .buttonStyle(.borderedProminent)
                     .disabled(model.updating)
             }
