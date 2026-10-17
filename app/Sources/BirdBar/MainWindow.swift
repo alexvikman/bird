@@ -640,6 +640,76 @@ struct PhpStatus: View {
     }
 }
 
+// MARK: - Updates
+
+struct UpdatesSection: View {
+    @ObservedObject var model: BirdModel
+    let state: BirdState
+
+    var body: some View {
+        LabeledContent("Version") {
+            Text("Bird \(state.birdVersion)").textSelection(.enabled)
+        }
+        HStack(alignment: .center, spacing: 8) {
+            status
+            Spacer()
+            if model.update?.available == true {
+                if let url = model.update?.url {
+                    Button("Release Notes") { model.open(url) }
+                        .buttonStyle(.link)
+                }
+                Button(model.updating ? "Updating…" : "Update Now") { model.installUpdate() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.updating)
+            }
+            Button("Check for Updates") {
+                Task { await model.checkForUpdates() }
+            }
+            .disabled(model.checkingForUpdate || model.updating)
+        }
+        if let error = model.updateError {
+            ErrorText(error: error)
+        }
+        Toggle("Check for updates when Bird starts", isOn: Binding(
+            get: { model.checkOnLaunch },
+            set: { model.checkOnLaunch = $0 }
+        ))
+        .help("Only checks and tells you; updates are never installed without a click.")
+    }
+
+    @ViewBuilder
+    private var status: some View {
+        if model.updating {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Updating… Bird restarts when it is done.").foregroundStyle(.secondary)
+            }
+        } else if model.checkingForUpdate {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Checking for updates…").foregroundStyle(.secondary)
+            }
+        } else if let update = model.update {
+            if update.available, let latest = update.latest {
+                Label("Bird \(latest) is available", systemImage: "arrow.down.circle.fill")
+                    .foregroundStyle(.orange)
+            } else {
+                VStack(alignment: .leading, spacing: 1) {
+                    Label("Bird is up to date", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    if let checked = model.lastUpdateCheck {
+                        Text("Checked \(checked.formatted(date: .omitted, time: .shortened))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        } else {
+            Text("Not checked yet").foregroundStyle(.secondary)
+        }
+    }
+}
+
 // MARK: - Settings
 
 struct SettingsPane: View {
@@ -651,9 +721,11 @@ struct SettingsPane: View {
             Section("PHP") {
                 QuickSettings(model: model, state: state)
             }
+            Section("Updates") {
+                UpdatesSection(model: model, state: state)
+            }
             Section("Bird") {
                 LabeledContent("Status", value: statusLine(state))
-                LabeledContent("Version", value: state.birdVersion)
                 LabeledContent("Domains", value: "*.\(state.tld)")
                 LabeledContent("Home") {
                     Button(abbreviate(state.birdHome)) { model.reveal(state.birdHome) }

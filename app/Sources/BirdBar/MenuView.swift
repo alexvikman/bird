@@ -17,6 +17,9 @@ struct MenuContent: View {
         if model.error != nil {
             Button("⚠︎ Show Last Error…") { show(model.pane) }
         }
+        if let update = model.update, update.available, let latest = update.latest {
+            Button("Update to Bird \(latest)…") { show(.settings) }
+        }
 
         Divider()
 
@@ -87,6 +90,11 @@ struct MenuContent: View {
 
         Button("Settings…") { show(.settings) }
             .keyboardShortcut(",")
+        Button("Check for Updates…") {
+            show(.settings)
+            Task { await model.checkForUpdates() }
+        }
+            .keyboardShortcut("u")
         Button("Open Log") { model.openLog() }
 
         Divider()

@@ -74,11 +74,14 @@ bird import herd [--install-php]
 `app/` holds Bird's macOS app (SwiftUI):
 
 - **Menu bar menu** for the quick things: status, open a site, restart Bird or
-  PHP, start/stop Bird, switch the global PHP version (⌘1…), opcache, Xdebug.
+  PHP, start/stop Bird, switch the global PHP version (⌘1…), opcache, Xdebug,
+  check for updates (⌘U).
 - **Bird window** (⌘O) to manage everything else: sites (PHP version per
   site, HTTPS redirect, open in browser/Finder/Terminal, link and unlink),
   proxies, parked folders, PHP versions (install, update, remove, make
-  global) and settings (including `bird doctor`).
+  global) and settings (including `bird doctor` and updates: check, install
+  with one click, and an option to check when the app starts; it never
+  installs on its own).
 
 It reads `bird state` and makes every change through the normal `bird`
 commands, so it never edits Bird's files itself.

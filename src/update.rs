@@ -107,6 +107,27 @@ fn download_checked(release: &Release, sums: &str, name: &str, label: &str) -> R
     Ok(bytes)
 }
 
+/// `bird self-update --check --json`, for the macOS app.
+pub fn check_json() -> Result<()> {
+    let current = env!("CARGO_PKG_VERSION");
+    let release = latest_release()?;
+    let latest = release
+        .as_ref()
+        .and_then(|r| release_version(&r.tag_name))
+        .map(str::to_string);
+    let available = latest.as_deref().is_some_and(|l| is_newer(l, current));
+    println!(
+        "{}",
+        json!({
+            "current": current,
+            "latest": latest,
+            "available": available,
+            "url": release.map(|r| r.html_url),
+        })
+    );
+    Ok(())
+}
+
 pub fn self_update(check_only: bool) -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
     let Some(release) = latest_release()? else {

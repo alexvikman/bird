@@ -80,6 +80,14 @@ struct Proxy: Decodable, Identifiable {
     let secure: Bool
 }
 
+/// `bird self-update --check --json`
+struct UpdateInfo: Decodable {
+    let current: String
+    let latest: String?
+    let available: Bool
+    let url: String?
+}
+
 // MARK: - Talking to `bird`
 
 /// All state comes from `bird state`, and every change goes through the
@@ -98,6 +106,15 @@ final class BirdModel: ObservableObject {
     /// Pane the main window shows; the menu sets it before opening the window.
     @Published var pane: Pane = .sites
 
+    // Updates (checked, never installed, on launch; installing is a click).
+    @Published private(set) var update: UpdateInfo?
+    @Published private(set) var checkingForUpdate = false
+    @Published private(set) var lastUpdateCheck: Date?
+    @Published private(set) var updateError: String?
+    @Published private(set) var updating = false
+
+    private static let checkOnLaunchKey = "checkForUpdatesOnLaunch"
+
     static let launchdLabel = "dev.bird.daemon"
     static let plist = "/Library/LaunchDaemons/dev.bird.daemon.plist"
 
@@ -113,7 +130,10 @@ final class BirdModel: ObservableObject {
     private var refreshing = false
 
     init() {
-        Task { await refresh() }
+        Task {
+            await refresh()
+            if checkOnLaunch { await checkForUpdates() }
+        }
         // Keep the menu bar icon roughly in sync while the menu is closed.
         // The menu is a native menu that can't refresh when it opens, so poll.
         Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
@@ -254,6 +274,84 @@ final class BirdModel: ObservableObject {
     func copy(_ text: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    // MARK: Updates
+
+    /// Check for a new Bird release when the app starts (default on).
+    var checkOnLaunch: Bool {
+        get { UserDefaults.standard.object(forKey: Self.checkOnLaunchKey) as? Bool ?? true }
+        set {
+            UserDefaults.standard.set(newValue, forKey: Self.checkOnLaunchKey)
+            objectWillChange.send()
+        }
+    }
+
+    func checkForUpdates() async {
+        guard !checkingForUpdate else { return }
+        checkingForUpdate = true
+        defer { checkingForUpdate = false }
+        let result = await Self.run(bird, ["self-update", "--check", "--json"])
+        if result.status == 0, let data = result.out.data(using: .utf8),
+           let info = try? JSONDecoder().decode(UpdateInfo.self, from: data)
+        {
+            update = info
+            updateError = nil
+            lastUpdateCheck = Date()
+        } else {
+            let message = result.err.trimmingCharacters(in: .whitespacesAndNewlines)
+            updateError = message.isEmpty ? "Could not check for updates" : message
+        }
+    }
+
+    /// Runs `bird self-update` on its own: it replaces this app and starts
+    /// the new one, so its output goes to a log file, not to a pipe that
+    /// would break when this process exits.
+    func installUpdate() {
+        guard !updating else { return }
+        let home = state.map { URL(fileURLWithPath: $0.birdHome) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".bird")
+        let log = home.appendingPathComponent("log/update.log")
+        try? FileManager.default.createDirectory(
+            at: log.deletingLastPathComponent(), withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: log.path, contents: nil)
+        guard let handle = try? FileHandle(forWritingTo: log) else {
+            updateError = "Could not write \(log.path)"
+            return
+        }
+        let process = Process()
+        process.executableURL = bird
+        process.arguments = ["self-update"]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = handle
+        process.standardError = handle
+        var env = ProcessInfo.processInfo.environment
+        env["NO_COLOR"] = "1"
+        process.environment = env
+        // Only reached when this app survives the update (e.g. it failed).
+        process.terminationHandler = { [weak self] finished in
+            let status = finished.terminationStatus
+            let output = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
+            Task { @MainActor in
+                guard let self else { return }
+                self.updating = false
+                self.activity = nil
+                if status != 0 {
+                    let tail = output.split(separator: "\n").suffix(3).joined(separator: "\n")
+                    self.updateError = "Update failed: \(tail)"
+                }
+                await self.refresh()
+                await self.checkForUpdates()
+            }
+        }
+        do {
+            try process.run()
+            updating = true
+            activity = "Updating Bird…"
+            updateError = nil
+        } catch {
+            updateError = "Could not start the update: \(error.localizedDescription)"
+        }
     }
 
     // MARK: Launch at login

@@ -46,6 +46,9 @@ enum Command {
         /// Only check whether a newer release exists
         #[arg(long)]
         check: bool,
+        /// With --check: print the result as JSON (used by the macOS app)
+        #[arg(long, requires = "check")]
+        json: bool,
     },
     /// Show the daemon state and running PHP pools
     Status,
@@ -247,7 +250,11 @@ pub fn main() -> Result<()> {
         Command::Install { user_only, php } => install::install(user_only, php),
         Command::Uninstall { purge } => install::uninstall(purge),
         Command::Doctor => install::doctor(),
-        Command::SelfUpdate { check } => crate::update::self_update(check),
+        Command::SelfUpdate {
+            check: true,
+            json: true,
+        } => crate::update::check_json(),
+        Command::SelfUpdate { check, .. } => crate::update::self_update(check),
         Command::Status => status(),
         Command::Migrate { status } => {
             if !status {
