@@ -17,9 +17,6 @@ struct MenuContent: View {
         if model.error != nil {
             Button("⚠︎ Show Last Error…") { show(model.pane) }
         }
-        if model.updateWaiting, let latest = model.update?.latest {
-            Button("Update to Bird \(latest)…") { model.presentUpdate() }
-        }
 
         Divider()
 
@@ -90,8 +87,14 @@ struct MenuContent: View {
 
         Button("Settings…") { show(.settings) }
             .keyboardShortcut(",")
-        Button("Check for Updates…") { model.checkForUpdatesInteractively() }
-            .keyboardShortcut("u")
+        // A waiting update takes the place of the check.
+        if model.updateWaiting, let latest = model.update?.latest {
+            Button("Update to Bird \(latest)…") { model.presentUpdate() }
+                .keyboardShortcut("u")
+        } else {
+            Button("Check for Updates…") { model.checkForUpdatesInteractively() }
+                .keyboardShortcut("u")
+        }
         Button("About Bird…") { show(.about) }
         Button("Open Log") { model.openLog() }
 
