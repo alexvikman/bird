@@ -46,7 +46,7 @@ fn current_user() -> Result<(String, String)> {
 }
 
 pub fn install(user_only: bool, php_version: Option<String>) -> Result<()> {
-    if unsafe { libc::geteuid() } == 0 {
+    if crate::sys::is_root() {
         bail!("run `bird install` as your normal user; it asks for sudo when needed");
     }
     let p = paths();
@@ -294,7 +294,7 @@ fn start_service(plist_file: &Path) -> Result<()> {
 
 /// Root part of the install. Idempotent: re-running it rewrites everything.
 pub fn system_install(user: &str, group: &str, home: &Path) -> Result<()> {
-    if unsafe { libc::geteuid() } != 0 {
+    if !crate::sys::is_root() {
         bail!("system-install must run as root (use `bird install`)");
     }
     if cfg!(target_os = "linux") {
@@ -383,6 +383,8 @@ struct PrivateTempDir(PathBuf);
 impl PrivateTempDir {
     fn new() -> std::io::Result<Self> {
         let mut template = b"/tmp/bird-XXXXXXXX\0".to_vec();
+        // SAFETY: template is our own writable, NUL-terminated buffer ending
+        // in X's, alive for the whole call; mkdtemp only overwrites the X's.
         let ptr = unsafe { libc::mkdtemp(template.as_mut_ptr().cast()) };
         if ptr.is_null() {
             return Err(std::io::Error::last_os_error());
@@ -512,7 +514,7 @@ pub fn uninstall(purge: bool) -> Result<()> {
 }
 
 pub fn system_uninstall(ca_name: Option<&str>) -> Result<()> {
-    if unsafe { libc::geteuid() } != 0 {
+    if !crate::sys::is_root() {
         bail!("system-uninstall must run as root (use `bird uninstall`)");
     }
     if cfg!(target_os = "linux") {

@@ -96,7 +96,7 @@ impl Paths {
         if run.join("php-8.10.sock").as_os_str().len() < 100 {
             return run;
         }
-        PathBuf::from(format!("/tmp/bird-{}", unsafe { libc::getuid() }))
+        PathBuf::from(format!("/tmp/bird-{}", crate::sys::uid()))
     }
 
     pub fn control_socket(&self) -> PathBuf {

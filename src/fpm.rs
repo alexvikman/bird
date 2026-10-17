@@ -153,7 +153,7 @@ fn kill_stale(name: &str) {
     let pid_file = paths().fpm_pid(name);
     let Some(pid) = std::fs::read_to_string(&pid_file)
         .ok()
-        .and_then(|s| s.trim().parse::<i32>().ok())
+        .and_then(|s| s.trim().parse::<u32>().ok())
     else {
         return;
     };
@@ -168,7 +168,7 @@ fn kill_stale(name: &str) {
         .unwrap_or(false);
     if is_ours {
         tracing::info!("stopping stale php-fpm {name} (pid {pid})");
-        unsafe { libc::kill(pid, libc::SIGTERM) };
+        let _ = crate::sys::signal(pid, libc::SIGTERM);
         std::thread::sleep(Duration::from_millis(300));
     }
     let _ = std::fs::remove_file(pid_file);
@@ -242,7 +242,7 @@ async fn spawn(version: &str, xdebug: bool) -> Result<Pool> {
 async fn stop_pool(name: &str, mut pool: Pool) {
     if let Some(pid) = pool.child.id() {
         // SIGQUIT = graceful: workers finish their current request.
-        unsafe { libc::kill(pid as i32, libc::SIGQUIT) };
+        let _ = crate::sys::signal(pid, libc::SIGQUIT);
         if tokio::time::timeout(Duration::from_secs(5), pool.child.wait())
             .await
             .is_err()

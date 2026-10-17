@@ -17,6 +17,7 @@ mod server;
 mod shim;
 mod signing;
 mod sites;
+mod sys;
 mod tls;
 mod ui;
 mod update;

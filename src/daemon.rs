@@ -182,6 +182,8 @@ async fn listener(name: &str, addr: SocketAddr) -> Result<(TcpListener, bool)> {
     #[cfg(target_os = "macos")]
     if let Some(fd) = launchd::socket(name).into_iter().next() {
         use std::os::fd::FromRawFd;
+        // SAFETY: launchd made this socket for Bird and hands it over once;
+        // nothing else holds or closes the fd, so the listener may own it.
         let std_listener = unsafe { std::net::TcpListener::from_raw_fd(fd) };
         std_listener.set_nonblocking(true)?;
         return Ok((TcpListener::from_std(std_listener)?, true));
@@ -340,6 +342,8 @@ async fn control_command(state: &Arc<State>, req: &serde_json::Value) -> serde_j
 /// unit grants.
 #[cfg(target_os = "linux")]
 fn drop_bind_capability() {
+    // SAFETY: prctl with PR_CAP_AMBIENT_CLEAR_ALL takes only integers and
+    // touches no memory.
     unsafe {
         libc::prctl(
             libc::PR_CAP_AMBIENT,
@@ -378,6 +382,8 @@ fn drop_bind_capability() {
             inheritable: 0,
         },
     ];
+    // SAFETY: header and data are #[repr(C)] in the kernel's layout for
+    // version 3 (a header and two data structs), and both outlive the call.
     let rc = unsafe { libc::syscall(libc::SYS_capset, &mut header, data.as_ptr()) };
     if rc != 0 {
         tracing::warn!(
@@ -392,6 +398,7 @@ mod launchd {
     use std::ffi::CString;
     use std::os::fd::RawFd;
 
+    // As declared in <launch.h> (macOS 10.10 and later).
     unsafe extern "C" {
         fn launch_activate_socket(
             name: *const libc::c_char,
@@ -405,11 +412,16 @@ mod launchd {
         let name = CString::new(name).unwrap();
         let mut fds: *mut libc::c_int = std::ptr::null_mut();
         let mut count: libc::size_t = 0;
+        // SAFETY: name is NUL-terminated and outlives the call; fds and count
+        // are valid places for launchd to write its answer.
         let rc = unsafe { launch_activate_socket(name.as_ptr(), &mut fds, &mut count) };
         if rc != 0 || fds.is_null() {
             return Vec::new();
         }
+        // SAFETY: on success fds points to `count` ints that launchd
+        // allocated with malloc; they are copied out before being freed.
         let out = unsafe { std::slice::from_raw_parts(fds, count) }.to_vec();
+        // SAFETY: the array is ours to free, freed once, and not used after.
         unsafe { libc::free(fds.cast()) };
         out
     }

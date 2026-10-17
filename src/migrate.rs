@@ -15,7 +15,6 @@
 //!   pretending to be current.
 
 use std::collections::HashSet;
-use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -134,9 +133,8 @@ fn lock(home: &Path) -> Result<Lock> {
         .write(true)
         .open(&path)
         .with_context(|| format!("could not open {}", path.display()))?;
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(std::io::Error::last_os_error()).context("could not lock migrations");
-    }
+    // Held until the file is closed, when Lock is dropped.
+    file.lock().context("could not lock migrations")?;
     Ok(Lock(file))
 }
 
@@ -233,7 +231,7 @@ pub fn run_in(home: &Path, migrations: &[Migration]) -> Result<Outcome> {
 /// Runs pending migrations in `~/.bird`. Never as root: files in ~/.bird must
 /// stay the user's.
 pub fn run() -> Result<Outcome> {
-    if unsafe { libc::geteuid() } == 0 {
+    if crate::sys::is_root() {
         return Ok(Outcome {
             applied: Vec::new(),
             unknown: Vec::new(),
