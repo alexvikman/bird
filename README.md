@@ -75,12 +75,13 @@ bird import herd [--install-php]
 
 - **Menu bar menu** for the quick things: status, open a site, restart Bird or
   PHP, start/stop Bird, switch the global PHP version (⌘1…), opcache, Xdebug,
-  check for updates (⌘U).
+  check for updates (⌘U, answered in a dialog). When an update is waiting, the
+  menu bar icon gets a dot and the menu offers it.
 - **Bird window** (⌘O) to manage everything else: sites (PHP version per
   site, HTTPS redirect, open in browser/Finder/Terminal, link and unlink),
   proxies, parked folders, PHP versions (install, update, remove, make
   global) and settings (including `bird doctor` and updates: check, install
-  with one click, and an option to check when the app starts; it never
+  with one click, and an option to check at launch and once a day; it never
   installs on its own).
 
 It reads `bird state` and makes every change through the normal `bird`

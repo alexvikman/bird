@@ -86,6 +86,8 @@ struct UpdateInfo: Decodable {
     let latest: String?
     let available: Bool
     let url: String?
+    /// Release notes (Markdown).
+    let notes: String?
 }
 
 // MARK: - Talking to `bird`
@@ -114,6 +116,10 @@ final class BirdModel: ObservableObject {
     @Published private(set) var updating = false
 
     private static let checkOnLaunchKey = "checkForUpdatesOnLaunch"
+    private static let lastCheckKey = "lastUpdateCheck"
+    private static let skippedKey = "skippedUpdateVersion"
+    /// Automatic checks: at launch, then whenever a day has passed.
+    private static let checkInterval: TimeInterval = 24 * 60 * 60
 
     static let launchdLabel = "dev.bird.daemon"
     static let plist = "/Library/LaunchDaemons/dev.bird.daemon.plist"
@@ -130,9 +136,15 @@ final class BirdModel: ObservableObject {
     private var refreshing = false
 
     init() {
+        lastUpdateCheck = UserDefaults.standard.object(forKey: Self.lastCheckKey) as? Date
         Task {
             await refresh()
             if checkOnLaunch { await checkForUpdates() }
+        }
+        // A menu bar app runs for weeks: look again once a day (the timer
+        // ticks hourly so a sleeping Mac catches up soon after waking).
+        Timer.scheduledTimer(withTimeInterval: 60 * 60, repeats: true) { [weak self] _ in
+            Task { await self?.checkIfDue() }
         }
         // Keep the menu bar icon roughly in sync while the menu is closed.
         // The menu is a native menu that can't refresh when it opens, so poll.
@@ -287,6 +299,108 @@ final class BirdModel: ObservableObject {
         }
     }
 
+    /// A newer release exists and the user hasn't chosen to skip it: shows
+    /// the dot on the menu bar icon and the "Update to …" menu item.
+    var updateWaiting: Bool {
+        guard let update, update.available, let latest = update.latest else { return false }
+        return latest != skippedVersion
+    }
+
+    var skippedVersion: String? {
+        get { UserDefaults.standard.string(forKey: Self.skippedKey) }
+        set {
+            UserDefaults.standard.set(newValue, forKey: Self.skippedKey)
+            objectWillChange.send()
+        }
+    }
+
+    private func checkIfDue() async {
+        guard checkOnLaunch else { return }
+        let due = lastUpdateCheck.map { Date().timeIntervalSince($0) >= Self.checkInterval } ?? true
+        if due { await checkForUpdates() }
+    }
+
+    /// "Check for Updates…" in the menu: checks, then answers in a dialog
+    /// (no window), like Sparkle-based apps do.
+    func checkForUpdatesInteractively() {
+        Task {
+            await checkForUpdates()
+            if let error = updateError {
+                showAlert(title: "Couldn't check for updates", text: error, style: .warning)
+            } else if update?.available == true {
+                presentUpdate()
+            } else {
+                showAlert(
+                    title: "You're up to date",
+                    text: "Bird \(update?.current ?? state?.birdVersion ?? "") is the latest version.",
+                    style: .informational)
+            }
+        }
+    }
+
+    /// Dialog for an available update: Install Update, Later, Skip This Version.
+    func presentUpdate() {
+        guard let alert = makeUpdateAlert(), let latest = update?.latest else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            installUpdate()
+        case .alertThirdButtonReturn:
+            skippedVersion = latest
+        default:
+            break
+        }
+    }
+
+    func makeUpdateAlert() -> NSAlert? {
+        guard let update, update.available, let latest = update.latest else { return nil }
+        let alert = NSAlert()
+        alert.messageText = "Bird \(latest) is available"
+        var text = "You have Bird \(update.current). The update also updates Bird.app and restarts Bird."
+        if let notes = update.notes?.trimmingCharacters(in: .whitespacesAndNewlines), !notes.isEmpty {
+            text += "\n\n" + Self.plainNotes(notes)
+        }
+        alert.informativeText = text
+        alert.icon = Self.alertIcon
+        alert.addButton(withTitle: "Install Update")
+        alert.addButton(withTitle: "Later")
+        alert.addButton(withTitle: "Skip This Version")
+        return alert
+    }
+
+    private func showAlert(title: String, text: String, style: NSAlert.Style) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = text
+        alert.alertStyle = style
+        alert.icon = Self.alertIcon
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
+    static var alertIcon: NSImage? {
+        NSImage(systemSymbolName: "bird.fill", accessibilityDescription: "Bird")?
+            .withSymbolConfiguration(.init(pointSize: 48, weight: .regular))
+    }
+
+    /// Release notes are Markdown; an alert shows plain text. Keeps the list,
+    /// drops the formatting, and caps the length.
+    static func plainNotes(_ markdown: String) -> String {
+        let lines = markdown
+            .replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "`", with: "")
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> String in
+                var l = String(line)
+                while l.hasPrefix("#") { l.removeFirst() }
+                if l.hasPrefix("- ") { l = "• " + l.dropFirst(2) }
+                return l.trimmingCharacters(in: .whitespaces)
+            }
+        let text = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.count > 900 ? String(text.prefix(900)) + "…" : text
+    }
+
     func checkForUpdates() async {
         guard !checkingForUpdate else { return }
         checkingForUpdate = true
@@ -298,6 +412,7 @@ final class BirdModel: ObservableObject {
             update = info
             updateError = nil
             lastUpdateCheck = Date()
+            UserDefaults.standard.set(lastUpdateCheck, forKey: Self.lastCheckKey)
         } else {
             let message = result.err.trimmingCharacters(in: .whitespacesAndNewlines)
             updateError = message.isEmpty ? "Could not check for updates" : message

@@ -20,6 +20,9 @@ const TARGET: &str = env!("BIRD_TARGET");
 #[derive(Deserialize)]
 struct Release {
     tag_name: String,
+    /// Release notes (Markdown).
+    #[serde(default)]
+    body: Option<String>,
     #[serde(default)]
     draft: bool,
     #[serde(default)]
@@ -122,6 +125,7 @@ pub fn check_json() -> Result<()> {
             "current": current,
             "latest": latest,
             "available": available,
+            "notes": release.as_ref().and_then(|r| r.body.clone()),
             "url": release.map(|r| r.html_url),
         })
     );
