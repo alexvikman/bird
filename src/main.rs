@@ -8,6 +8,7 @@ mod fpm;
 mod herd;
 mod install;
 mod linux;
+mod migrate;
 mod paths;
 mod php;
 mod proxy;

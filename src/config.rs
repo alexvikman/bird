@@ -76,8 +76,6 @@ pub struct ProxyConfig {
     pub secure: bool,
 }
 
-const OLD_DEFAULT_MIRROR: &str = "https://dl.static-php.dev/static-php-cli/common";
-
 fn is_false(b: &bool) -> bool {
     !*b
 }
@@ -114,30 +112,30 @@ impl Config {
     }
 
     pub fn load_from(path: &Path) -> Result<Self> {
-        let mut cfg: Self = match std::fs::read_to_string(path) {
-            Ok(text) => toml::from_str(&text)
-                .with_context(|| format!("could not parse {}", path.display()))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
-            Err(e) => return Err(e).with_context(|| format!("could not read {}", path.display())),
-        };
-        // Bird 0.1 wrote its old default mirror into every config; move those
-        // to Bird's own builds. (Other static-php URLs are kept as chosen.)
-        if cfg.php_mirror == OLD_DEFAULT_MIRROR {
-            cfg.php_mirror = crate::php::DEFAULT_MIRROR.into();
+        // Changes to stored configs belong in a migration (see migrate.rs),
+        // not here.
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                toml::from_str(&text).with_context(|| format!("could not parse {}", path.display()))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(e).with_context(|| format!("could not read {}", path.display())),
         }
-        Ok(cfg)
     }
 
     pub fn save(&mut self) -> Result<()> {
+        self.save_to(&paths().config())
+    }
+
+    pub fn save_to(&mut self, path: &Path) -> Result<()> {
         self.sites.retain(|_, s| !s.is_empty());
-        let path = paths().config();
         std::fs::create_dir_all(path.parent().unwrap())?;
         let body = toml::to_string_pretty(self)?;
         let text =
             format!("# Bird configuration. Managed by `bird`, safe to edit by hand.\n\n{body}");
         let tmp = path.with_extension("toml.tmp");
         std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, &path)?;
+        std::fs::rename(&tmp, path)?;
         Ok(())
     }
 
@@ -147,27 +145,5 @@ impl Config {
 
     pub fn domain(&self, name: &str) -> String {
         format!("{name}.{}", self.tld)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn migrates_the_old_default_mirror() {
-        let dir = std::env::temp_dir().join(format!("bird-cfg-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("config.toml");
-        std::fs::write(&file, format!("php_mirror = \"{OLD_DEFAULT_MIRROR}\"\n")).unwrap();
-        assert_eq!(
-            Config::load_from(&file).unwrap().php_mirror,
-            crate::php::DEFAULT_MIRROR
-        );
-
-        let custom = "https://dl.static-php.dev/static-php-cli/bulk";
-        std::fs::write(&file, format!("php_mirror = \"{custom}\"\n")).unwrap();
-        assert_eq!(Config::load_from(&file).unwrap().php_mirror, custom);
-        std::fs::remove_dir_all(dir).ok();
     }
 }

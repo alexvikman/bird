@@ -49,6 +49,12 @@ enum Command {
     },
     /// Show the daemon state and running PHP pools
     Status,
+    /// Show which migrations of ~/.bird have run (they run automatically)
+    Migrate {
+        /// Only list applied and pending migrations
+        #[arg(long)]
+        status: bool,
+    },
     /// Start the background service
     Start,
     /// Stop the background service
@@ -222,12 +228,33 @@ enum Command {
 
 pub fn main() -> Result<()> {
     let cli = Cli::parse();
+    // Bring ~/.bird up to date with this version before doing anything else.
+    // Not for commands that run as root, the daemon (it migrates on start),
+    // install (it migrates once ~/.bird exists) or migrate itself.
+    let migrates_itself = matches!(
+        cli.command,
+        Command::Daemon { .. }
+            | Command::SystemInstall { .. }
+            | Command::SystemUninstall { .. }
+            | Command::Install { .. }
+            | Command::Uninstall { .. }
+            | Command::Migrate { .. }
+    );
+    if !migrates_itself {
+        crate::migrate::run_for_cli()?;
+    }
     match cli.command {
         Command::Install { user_only, php } => install::install(user_only, php),
         Command::Uninstall { purge } => install::uninstall(purge),
         Command::Doctor => install::doctor(),
         Command::SelfUpdate { check } => crate::update::self_update(check),
         Command::Status => status(),
+        Command::Migrate { status } => {
+            if !status {
+                crate::migrate::run_for_cli()?;
+            }
+            crate::migrate::print_status()
+        }
         Command::Start => install::start(),
         Command::Stop => install::stop(),
         Command::Restart { version, daemon } => restart(version, daemon),

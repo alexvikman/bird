@@ -108,6 +108,21 @@ Set `BIRD_HOME` to use another directory (handy for testing:
 Databases, mail catchers, dump servers, AI assistants, deployment, telemetry.
 Use DBngin/Docker/Homebrew for services and fnm/nvm for Node.
 
+## Updates and migrations
+
+`bird self-update` (or Update Now in the app) installs a new release. When a
+version needs to change something in `~/.bird` (config.toml, installed PHP,
+anything stored later), it does so with a migration in `src/migrate.rs`,
+applied automatically: by the new binary right after `self-update`, when the
+daemon starts, and before CLI commands. Applied migrations are recorded in
+`~/.bird/migrations.json`, `config.toml` is backed up to `~/.bird/backups/`
+first, and an older Bird that finds newer migrations warns instead of
+touching the data. `bird migrate --status` shows what ran.
+
+Adding one: append a `Migration` with the next id (`YYYY_MM_DD_NNNNNN_name`)
+to `MIGRATIONS`. Make it idempotent, never change a released one, and add a
+test.
+
 ## Development
 
 ```bash

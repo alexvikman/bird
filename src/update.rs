@@ -155,6 +155,17 @@ pub fn self_update(check_only: bool) -> Result<()> {
     php::extract_binary(&archive, "bird", &binary).context("could not install the new bird")?;
     ui::ok(format!("bird {current} → {latest}"));
 
+    // The new version migrates ~/.bird right away (it knows its migrations;
+    // this one doesn't). The daemon would also do it when it restarts.
+    let migrated = Command::new(&binary)
+        .args(["migrate"])
+        .stdout(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if !migrated {
+        ui::warn("the new bird could not migrate ~/.bird; run `bird migrate` to see why");
+    }
+
     // Bird.app, if it is installed.
     if let Some(app) = installed_app().filter(|_| cfg!(target_os = "macos")) {
         let arch = TARGET.split('-').next().unwrap_or("aarch64");

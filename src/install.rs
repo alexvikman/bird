@@ -61,6 +61,9 @@ pub fn install(user_only: bool, php_version: Option<String>) -> Result<()> {
         ui::ok(format!("installed {}", p.bird_binary().display()));
     }
 
+    // Existing installs are brought up to date; a fresh one just records
+    // that every migration is in place.
+    crate::migrate::run_for_cli()?;
     let mut cfg = Config::load()?;
     cfg.save()?;
     let ca_status = tls::ensure_ca(&cfg.tld)?;
