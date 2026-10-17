@@ -1,0 +1,93 @@
+# Tests, lints and builds Bird on every push to main and every pull request.
+#
+# Hardening: read-only token, no secrets, checkout keeps no credentials, and
+# every action is pinned to a commit SHA. `pull_request` (not
+# `pull_request_target`) runs fork PRs without access to anything; the repo
+# also requires approval before workflows from outside contributors run.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # rustup is preinstalled on the runners; no third-party toolchain action.
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup default stable
+          rustc --version
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked
+
+      - name: Test
+        env:
+          # On Linux, also check the systemd unit with systemd-analyze.
+          BIRD_TEST_SYSTEMD: ${{ runner.os == 'Linux' && '1' || '' }}
+          BIRD_HOME: ${{ runner.temp }}/bird-home
+        run: cargo test --locked
+
+  app:
+    name: macOS app
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build Bird.app
+        run: app/build.sh
+
+  scripts:
+    name: Shell scripts
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # shellcheck is preinstalled on the Ubuntu runners.
+      - name: shellcheck
+        run: shellcheck php-builds/build.sh app/build.sh
+
+      - name: manifest.py
+        run: |
+          python3 -m py_compile php-builds/manifest.py
+          python3 php-builds/manifest.py recipe
