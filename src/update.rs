@@ -258,12 +258,23 @@ fn replace_app(zip: &[u8], app: &Path) -> Result<()> {
         let _ = std::fs::remove_dir_all(&staging);
         bail!("the downloaded archive does not contain Bird.app");
     }
-    let was_running = Command::new("pgrep")
-        .args(["-x", "Bird"])
-        .output()
-        .is_ok_and(|o| o.status.success());
+    let app_running = || {
+        Command::new("pgrep")
+            .args(["-x", "Bird"])
+            .output()
+            .is_ok_and(|o| o.status.success())
+    };
+    let was_running = app_running();
     if was_running {
         let _ = Command::new("pkill").args(["-x", "Bird"]).status();
+        // Opening it again while the old one is still quitting fails
+        // (LaunchServices error -600), so wait for it to be gone.
+        for _ in 0..50 {
+            if !app_running() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
     }
     let old = parent.join(".Bird.app.old");
     let _ = std::fs::remove_dir_all(&old);
