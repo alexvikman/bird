@@ -361,7 +361,6 @@ final class BirdModel: ObservableObject {
             text += "\n\n" + Self.plainNotes(notes)
         }
         alert.informativeText = text
-        alert.icon = Self.alertIcon
         alert.addButton(withTitle: "Install Update")
         alert.addButton(withTitle: "Later")
         alert.addButton(withTitle: "Skip This Version")
@@ -373,15 +372,9 @@ final class BirdModel: ObservableObject {
         alert.messageText = title
         alert.informativeText = text
         alert.alertStyle = style
-        alert.icon = Self.alertIcon
         alert.addButton(withTitle: "OK")
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
-    }
-
-    static var alertIcon: NSImage? {
-        NSImage(systemSymbolName: "bird.fill", accessibilityDescription: "Bird")?
-            .withSymbolConfiguration(.init(pointSize: 48, weight: .regular))
     }
 
     /// Release notes are Markdown; an alert shows plain text. Keeps the list,

@@ -17,6 +17,10 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin" "$app/Contents/MacOS/Bird"
 cp "$here/Info.plist" "$app/Contents/Info.plist"
+# The app icon: icon-art.webp placed on the macOS icon grid by make-icon.swift.
+rm -rf "$here/build/Bird.iconset"
+swift "$here/make-icon.swift" "$here/icon-art.webp" "$here/build/Bird.iconset"
+iconutil -c icns -o "$app/Contents/Resources/Bird.icns" "$here/build/Bird.iconset"
 codesign --force --sign - --options runtime "$app"
 echo "built $app"
 
