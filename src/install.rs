@@ -239,6 +239,43 @@ fn launchctl(args: &[&str]) -> std::io::Result<std::process::Output> {
     Command::new("launchctl").args(args).output()
 }
 
+fn service_loaded() -> bool {
+    launchctl(&["print", &format!("system/{LABEL}")]).is_ok_and(|o| o.status.success())
+}
+
+/// Unloads the service and waits until launchd has really let go of it:
+/// `bootout` returns before the job is gone, and a `bootstrap` in that
+/// window fails with "5: Input/output error".
+fn stop_service() {
+    if !service_loaded() {
+        return;
+    }
+    let _ = launchctl(&["bootout", &format!("system/{LABEL}")]);
+    for _ in 0..100 {
+        if !service_loaded() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Loads the service, retrying while launchd is still busy with an old job.
+fn start_service(plist_file: &Path) -> Result<()> {
+    let plist_file = plist_file.display().to_string();
+    let mut last_error = String::new();
+    for attempt in 0..5 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        let out = launchctl(&["bootstrap", "system", &plist_file])?;
+        if out.status.success() || service_loaded() {
+            return Ok(());
+        }
+        last_error = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    }
+    bail!("launchctl bootstrap failed: {last_error}")
+}
+
 /// Root part of the install. Idempotent: re-running it rewrites everything.
 pub fn system_install(user: &str, group: &str, home: &Path) -> Result<()> {
     if unsafe { libc::geteuid() } != 0 {
@@ -277,15 +314,9 @@ pub fn system_install(user: &str, group: &str, home: &Path) -> Result<()> {
 
     // launchd: root binds the ports, the daemon runs as the user.
     let plist_file = plist_path();
-    let _ = launchctl(&["bootout", &format!("system/{LABEL}")]);
+    stop_service();
     std::fs::write(&plist_file, plist(user, group, home, &cfg))?;
-    let out = launchctl(&["bootstrap", "system", &plist_file.display().to_string()])?;
-    if !out.status.success() {
-        bail!(
-            "launchctl bootstrap failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
+    start_service(&plist_file)?;
     ui::ok(format!("started launchd service {LABEL}"));
 
     // Trust the CA for TLS in the system keychain (macOS may ask for confirmation).
@@ -462,7 +493,7 @@ pub fn system_uninstall(ca_name: Option<&str>) -> Result<()> {
     if unsafe { libc::geteuid() } != 0 {
         bail!("system-uninstall must run as root (use `bird uninstall`)");
     }
-    let _ = launchctl(&["bootout", &format!("system/{LABEL}")]);
+    stop_service();
     let _ = std::fs::remove_file(plist_path());
     ui::ok("removed launchd service");
     if let Ok(entries) = std::fs::read_dir("/etc/resolver") {
@@ -494,11 +525,21 @@ pub fn start() -> Result<()> {
             "Bird is not installed as a service. Run `bird install` (or `bird daemon` in the foreground)"
         );
     }
-    let status = Command::new("sudo")
-        .args(["launchctl", "bootstrap", "system"])
-        .arg(plist_path())
-        .status()?;
-    if !status.success() && !control::is_running() {
+    // Right after `bird stop`, launchd may still be unloading the old job and
+    // bootstrap fails with "5: Input/output error"; retry for a few seconds.
+    for attempt in 0..5 {
+        if service_loaded() {
+            break;
+        }
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        let _ = Command::new("sudo")
+            .args(["launchctl", "bootstrap", "system"])
+            .arg(plist_path())
+            .status()?;
+    }
+    if !service_loaded() && !control::is_running() {
         bail!("could not start the service");
     }
     wait_for_daemon();
@@ -534,6 +575,13 @@ pub fn stop() -> Result<()> {
         .status()?;
     if !status.success() {
         bail!("could not stop the service (is it running?)");
+    }
+    // bootout returns before launchd has let go of the job.
+    for _ in 0..100 {
+        if !service_loaded() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
     ui::ok("bird stopped");
     Ok(())
