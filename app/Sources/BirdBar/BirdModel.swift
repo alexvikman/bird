@@ -378,18 +378,29 @@ final class BirdModel: ObservableObject {
     }
 
     /// Release notes are Markdown; an alert shows plain text. Keeps the list,
-    /// drops the formatting, and caps the length.
+    /// joins wrapped lines into paragraphs as Markdown does, drops the
+    /// formatting, and caps the length.
     static func plainNotes(_ markdown: String) -> String {
-        let lines = markdown
+        var lines: [String] = []
+        var joinable = false  // the last line is paragraph or list text
+        for raw in markdown
             .replacingOccurrences(of: "**", with: "")
             .replacingOccurrences(of: "`", with: "")
             .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { line -> String in
-                var l = String(line)
-                while l.hasPrefix("#") { l.removeFirst() }
-                if l.hasPrefix("- ") { l = "• " + l.dropFirst(2) }
-                return l.trimmingCharacters(in: .whitespaces)
+        {
+            var l = raw.trimmingCharacters(in: .whitespaces)
+            let heading = l.hasPrefix("#")
+            while l.hasPrefix("#") { l.removeFirst() }
+            l = l.trimmingCharacters(in: .whitespaces)
+            let bullet = l.hasPrefix("- ") || l.hasPrefix("* ")
+            if bullet { l = "• " + l.dropFirst(2) }
+            if joinable, !l.isEmpty, !heading, !bullet {
+                lines[lines.count - 1] += " " + l
+            } else {
+                lines.append(l)
             }
+            joinable = !l.isEmpty && !heading
+        }
         let text = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         return text.count > 900 ? String(text.prefix(900)) + "…" : text
     }
