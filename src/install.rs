@@ -16,7 +16,7 @@ use anyhow::{Context, Result, bail};
 use crate::config::Config;
 use crate::paths::{paths, user_home};
 use crate::ui::{self, dim};
-use crate::{control, dns, php, shim, tls};
+use crate::{control, dns, linux, php, shim, tls};
 
 pub const LABEL: &str = "dev.bird.daemon";
 const RESOLVER_MARKER: &str = "# Managed by Bird";
@@ -31,6 +31,9 @@ fn resolver_path(tld: &str) -> PathBuf {
 }
 
 pub fn is_system_installed() -> bool {
+    if cfg!(target_os = "linux") {
+        return linux::is_installed();
+    }
     plist_path().exists()
 }
 
@@ -49,7 +52,7 @@ pub fn install(user_only: bool, php_version: Option<String>) -> Result<()> {
     let p = paths();
     p.ensure_dirs()?;
 
-    // A stable copy of the binary, so the launchd job and shims survive `cargo clean`.
+    // A stable copy of the binary, so the service and shims survive `cargo clean`.
     let exe = std::env::current_exe()?.canonicalize()?;
     if exe != p.bird_binary() {
         let tmp = p.bird_binary().with_extension("new");
@@ -86,10 +89,16 @@ pub fn install(user_only: bool, php_version: Option<String>) -> Result<()> {
                 .cloned()
                 .context("no PHP versions available")?,
         };
-        let full = php::install(&cfg, &version)?;
-        ui::ok(format!("installed PHP {full}"));
-        cfg.php = Some(version);
-        cfg.save()?;
+        // Not fatal: the service, DNS and CA are useful without PHP too, and
+        // `bird php:install` can be run later.
+        match php::install(&cfg, &version) {
+            Ok(full) => {
+                ui::ok(format!("installed PHP {full}"));
+                cfg.php = Some(version);
+                cfg.save()?;
+            }
+            Err(e) => ui::warn(format!("could not install PHP {version}: {e:#}")),
+        }
     } else if cfg.php.is_none() {
         cfg.php = php::installed().last().map(|i| i.minor.clone());
         cfg.save()?;
@@ -117,9 +126,13 @@ pub fn install(user_only: bool, php_version: Option<String>) -> Result<()> {
         ui::ok("user setup done; run `bird daemon --http-port 8080 --https-port 8443` to try it");
     } else {
         println!(
-            "\nThe next steps need administrator rights (DNS resolver, launchd service, trusting the CA)."
+            "\nThe next steps need administrator rights (DNS resolver, background service, trusting the CA)."
         );
         sudo_system_install()?;
+        if cfg!(target_os = "linux") {
+            // Browsers on Linux use their own (per-user) certificate stores.
+            linux::trust_ca_in_browsers();
+        }
         wait_for_daemon();
     }
     path_hint();
@@ -280,6 +293,9 @@ fn start_service(plist_file: &Path) -> Result<()> {
 pub fn system_install(user: &str, group: &str, home: &Path) -> Result<()> {
     if unsafe { libc::geteuid() } != 0 {
         bail!("system-install must run as root (use `bird install`)");
+    }
+    if cfg!(target_os = "linux") {
+        return linux::system_install(user, group, home);
     }
     let cfg = Config::load()?;
 
@@ -471,6 +487,9 @@ pub fn uninstall(purge: bool) -> Result<()> {
         if !cmd.status()?.success() {
             bail!("system uninstall failed");
         }
+        if let (true, Some(name)) = (cfg!(target_os = "linux"), &ca_name) {
+            linux::untrust_ca_in_browsers(name);
+        }
     }
     if purge {
         if paths().home.join("config.toml").exists() || paths().php_root().exists() {
@@ -492,6 +511,9 @@ pub fn uninstall(purge: bool) -> Result<()> {
 pub fn system_uninstall(ca_name: Option<&str>) -> Result<()> {
     if unsafe { libc::geteuid() } != 0 {
         bail!("system-uninstall must run as root (use `bird uninstall`)");
+    }
+    if cfg!(target_os = "linux") {
+        return linux::system_uninstall();
     }
     stop_service();
     let _ = std::fs::remove_file(plist_path());
@@ -525,6 +547,11 @@ pub fn start() -> Result<()> {
             "Bird is not installed as a service. Run `bird install` (or `bird daemon` in the foreground)"
         );
     }
+    if cfg!(target_os = "linux") {
+        linux::start()?;
+        wait_for_daemon();
+        return Ok(());
+    }
     // Right after `bird stop`, launchd may still be unloading the old job and
     // bootstrap fails with "5: Input/output error"; retry for a few seconds.
     for attempt in 0..5 {
@@ -547,21 +574,24 @@ pub fn start() -> Result<()> {
 }
 
 /// Whether the daemon answering on this BIRD_HOME's control socket runs as
-/// the launchd service. `None` when no daemon answers.
-pub fn running_under_launchd() -> Option<bool> {
+/// the installed service (launchd or systemd), not `bird daemon` by hand.
+/// `None` when no daemon answers.
+pub fn running_as_service() -> Option<bool> {
     let status = control::send(serde_json::json!({"cmd": "status"})).ok()?;
-    // Daemons from before this field existed: assume the service if installed.
+    // Daemons from before the `service` field reported `launchd`; even older
+    // ones neither: assume the service if it is installed.
     Some(
-        status["launchd"]
+        status["service"]
             .as_bool()
+            .or_else(|| status["launchd"].as_bool())
             .unwrap_or_else(is_system_installed),
     )
 }
 
 pub fn stop() -> Result<()> {
     // A foreground daemon (`bird daemon`) is stopped directly, even when the
-    // service is installed too; only the service needs launchctl.
-    match running_under_launchd() {
+    // service is installed too; only the service needs launchctl/systemctl.
+    match running_as_service() {
         Some(false) => {
             control::send(serde_json::json!({"cmd": "shutdown"}))?;
             ui::ok("stopped the foreground daemon");
@@ -569,6 +599,9 @@ pub fn stop() -> Result<()> {
         }
         None if !is_system_installed() => bail!("Bird is not running"),
         _ => {}
+    }
+    if cfg!(target_os = "linux") {
+        return linux::stop();
     }
     let status = Command::new("sudo")
         .args(["launchctl", "bootout", &format!("system/{LABEL}")])
@@ -663,20 +696,25 @@ pub fn doctor() -> Result<()> {
         "daemon not running — `bird start` or `bird install`".into(),
     );
 
-    let resolver = std::fs::read_to_string(resolver_path(&cfg.tld)).unwrap_or_default();
-    check(
-        resolver.starts_with(RESOLVER_MARKER)
-            && resolver.contains(&format!("port {}", cfg.dns_port)),
-        format!("/etc/resolver/{} points to Bird", cfg.tld),
-        if resolver.is_empty() {
-            format!("/etc/resolver/{} is missing — run `bird install`", cfg.tld)
-        } else {
-            format!(
-                "/etc/resolver/{} belongs to another tool (Herd/Valet?) — run `bird install`",
-                cfg.tld
-            )
-        },
-    );
+    if cfg!(target_os = "linux") {
+        let (ok, detail) = linux::dns_configured(&cfg);
+        check(ok, detail.clone(), detail);
+    } else {
+        let resolver = std::fs::read_to_string(resolver_path(&cfg.tld)).unwrap_or_default();
+        check(
+            resolver.starts_with(RESOLVER_MARKER)
+                && resolver.contains(&format!("port {}", cfg.dns_port)),
+            format!("/etc/resolver/{} points to Bird", cfg.tld),
+            if resolver.is_empty() {
+                format!("/etc/resolver/{} is missing — run `bird install`", cfg.tld)
+            } else {
+                format!(
+                    "/etc/resolver/{} belongs to another tool (Herd/Valet?) — run `bird install`",
+                    cfg.tld
+                )
+            },
+        );
+    }
 
     if daemon {
         check(
@@ -699,15 +737,25 @@ pub fn doctor() -> Result<()> {
         }
     }
 
+    let trusted = if cfg!(target_os = "linux") {
+        linux::ca_trusted()
+    } else {
+        ca_trusted()
+    };
     check(
-        paths().ca_cert().exists() && ca_trusted(),
+        paths().ca_cert().exists() && trusted,
         "certificate authority trusted".into(),
         "certificate authority not trusted — run `bird install`".into(),
     );
 
-    if Path::new("/Library/LaunchDaemons/de.beyondco.herd.helper.plist").exists() {
+    // Only a running Herd competes for ports 80/443 and /etc/resolver.
+    let herd_running = Command::new("pgrep")
+        .args(["-x", "Herd"])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if herd_running {
         ui::warn(
-            "Laravel Herd is installed; quit Herd so it doesn't compete for ports 80/443 and /etc/resolver",
+            "Laravel Herd is running; quit it so it doesn't compete for ports 80/443 and /etc/resolver",
         );
     }
     println!();

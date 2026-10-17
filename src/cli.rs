@@ -366,7 +366,7 @@ fn human_duration(secs: u64) -> String {
 
 fn restart(version: Option<String>, daemon: bool) -> Result<()> {
     if daemon {
-        let launchd = install::running_under_launchd().context("the bird daemon is not running")?;
+        let launchd = install::running_as_service().context("the bird daemon is not running")?;
         control::send(json!({"cmd": "shutdown"}))?;
         if launchd {
             ui::ok("daemon restarting (launchd starts it again)");
@@ -711,7 +711,11 @@ fn open(name: Option<String>) -> Result<()> {
     let cfg = Config::load()?;
     let name = target_site(&cfg, name)?;
     let url = format!("https://{}", cfg.domain(&name));
-    std::process::Command::new("open").arg(&url).status()?;
+    if cfg!(target_os = "linux") {
+        crate::linux::open(&url)?;
+    } else {
+        std::process::Command::new("open").arg(&url).status()?;
+    }
     Ok(())
 }
 
@@ -1041,6 +1045,7 @@ fn ini(version: Option<String>, edit: bool) -> Result<()> {
                 .arg("sh")
                 .arg(&path)
                 .status()?,
+            Err(_) if cfg!(target_os = "linux") => crate::linux::open(&path.display().to_string())?,
             Err(_) => std::process::Command::new("open")
                 .arg("-t")
                 .arg(&path)

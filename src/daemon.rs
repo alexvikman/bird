@@ -1,7 +1,9 @@
 //! The long-running Bird process: DNS, HTTP(S) and PHP-FPM supervision.
 //!
-//! Under launchd the privileged listening sockets (127.0.0.1:80/443) are
-//! created by launchd and handed over, so the daemon itself runs as the user.
+//! Under launchd (macOS) the privileged listening sockets (127.0.0.1:80/443)
+//! are created by launchd and handed over, so the daemon itself runs as the
+//! user. Under systemd (Linux) it runs as the user with CAP_NET_BIND_SERVICE
+//! only, binds the ports itself and drops the capability right after.
 //! Started by hand, it binds the configured ports itself.
 
 use std::net::SocketAddr;
@@ -35,8 +37,8 @@ pub struct State {
     /// Ports actually listened on; port changes in the config need a restart.
     ports: (u16, u16),
     shutdown: Notify,
-    /// Whether the listening sockets came from launchd (the installed service).
-    launchd: std::sync::atomic::AtomicBool,
+    /// Whether this runs as the installed service (launchd or systemd).
+    service: std::sync::atomic::AtomicBool,
 }
 
 fn config_mtime() -> Option<SystemTime> {
@@ -56,7 +58,7 @@ impl State {
             started: Instant::now(),
             ports,
             shutdown: Notify::new(),
-            launchd: std::sync::atomic::AtomicBool::new(false),
+            service: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -122,9 +124,14 @@ async fn main(http_port: Option<u16>, https_port: Option<u16>) -> Result<()> {
     let (http, from_launchd) =
         listener("http", SocketAddr::from((cfg.listen, cfg.http_port))).await?;
     let (https, _) = listener("https", SocketAddr::from((cfg.listen, cfg.https_port))).await?;
-    state
-        .launchd
-        .store(from_launchd, std::sync::atomic::Ordering::Relaxed);
+    // systemd sets INVOCATION_ID for the processes of a unit.
+    let under_systemd = std::env::var_os("INVOCATION_ID").is_some();
+    state.service.store(
+        from_launchd || under_systemd,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    #[cfg(target_os = "linux")]
+    drop_bind_capability();
     let dns_socket = UdpSocket::bind(("127.0.0.1", cfg.dns_port))
         .await
         .with_context(|| format!("could not bind DNS to 127.0.0.1:{}", cfg.dns_port))?;
@@ -282,7 +289,7 @@ async fn control_command(state: &Arc<State>, req: &serde_json::Value) -> serde_j
                 "tld": cfg.tld,
                 "http_port": cfg.http_port,
                 "https_port": cfg.https_port,
-                "launchd": state.launchd.load(std::sync::atomic::Ordering::Relaxed),
+                "service": state.service.load(std::sync::atomic::Ordering::Relaxed),
                 "fpm": state.fpm.status().await,
             })
         }
@@ -300,6 +307,58 @@ async fn control_command(state: &Arc<State>, req: &serde_json::Value) -> serde_j
             json!({"ok": true})
         }
         other => json!({"ok": false, "error": format!("unknown command {other:?}")}),
+    }
+}
+
+/// The ports are bound; nothing (and no PHP worker) needs to bind privileged
+/// ports any more. Clears the ambient and effective capability the systemd
+/// unit grants.
+#[cfg(target_os = "linux")]
+fn drop_bind_capability() {
+    unsafe {
+        libc::prctl(
+            libc::PR_CAP_AMBIENT,
+            libc::PR_CAP_AMBIENT_CLEAR_ALL,
+            0,
+            0,
+            0,
+        );
+    }
+    // capset with an empty set: drop effective/permitted capabilities too.
+    #[repr(C)]
+    struct Header {
+        version: u32,
+        pid: i32,
+    }
+    #[repr(C)]
+    struct Data {
+        effective: u32,
+        permitted: u32,
+        inheritable: u32,
+    }
+    const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+    let mut header = Header {
+        version: LINUX_CAPABILITY_VERSION_3,
+        pid: 0,
+    };
+    let data = [
+        Data {
+            effective: 0,
+            permitted: 0,
+            inheritable: 0,
+        },
+        Data {
+            effective: 0,
+            permitted: 0,
+            inheritable: 0,
+        },
+    ];
+    let rc = unsafe { libc::syscall(libc::SYS_capset, &mut header, data.as_ptr()) };
+    if rc != 0 {
+        tracing::warn!(
+            "could not drop capabilities: {}",
+            std::io::Error::last_os_error()
+        );
     }
 }
 

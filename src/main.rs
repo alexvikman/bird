@@ -7,6 +7,7 @@ mod fastcgi;
 mod fpm;
 mod herd;
 mod install;
+mod linux;
 mod paths;
 mod php;
 mod proxy;
