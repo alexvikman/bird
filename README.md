@@ -45,7 +45,8 @@ FPM pool with Xdebug loaded, started on demand; requests that carry an Xdebug
 trigger (the Xdebug browser extension's `XDEBUG_SESSION` cookie, or
 `?XDEBUG_SESSION=1`, `?XDEBUG_PROFILE=1`, `?XDEBUG_TRACE=1` in the URL) go
 there, everything else to the normal pool. Your IDE listens on port 9003;
-profiles and traces land in `~/.bird/log/xdebug`. `bird xdebug on` debugs
+profiles and traces land in `~/.bird/log/xdebug` (kept for a week, at most
+1 GB). `bird xdebug on` debugs
 every request, `off` ignores triggers. Xdebug's settings live in
 `~/.bird/php/<version>/xdebug.d/` and can be overridden in `conf.d/`.
 
@@ -104,7 +105,7 @@ is enough on your own Mac; "Open menu bar app at login" is in Settings.
 ~/.bird/bin/          bird + shims — put this first on PATH
 ~/.bird/php/8.4/      bin/php, bin/php-fpm, php.ini, conf.d/
 ~/.bird/ca/           local certificate authority
-~/.bird/log/          bird.log, php-8.4-fpm.log
+~/.bird/log/          bird.log, php-8.4-fpm.log (each kept under 10 MB, plus one .1)
 ```
 
 Set `BIRD_HOME` to use another directory (handy for testing:

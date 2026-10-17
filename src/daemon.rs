@@ -162,6 +162,7 @@ async fn main(http_port: Option<u16>, https_port: Option<u16>) -> Result<()> {
     tokio::spawn(dns::serve(dns_socket, state.clone()));
     tokio::spawn(control_loop(control, state.clone()));
     tokio::spawn(idle_reaper(state.clone()));
+    tokio::spawn(log_janitor());
 
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::select! {
@@ -248,6 +249,19 @@ async fn idle_reaper(state: Arc<State>) {
         if minutes > 0 {
             state.fpm.reap_idle(Duration::from_secs(minutes * 60)).await;
         }
+    }
+}
+
+/// Keeps ~/.bird/log bounded (see `logs`); cheap enough to run every 10 minutes.
+async fn log_janitor() {
+    loop {
+        let dir = paths().log();
+        match tokio::task::spawn_blocking(move || crate::logs::tidy(&dir)).await {
+            Ok(Err(e)) => tracing::warn!("could not tidy the logs: {e}"),
+            Err(e) => tracing::warn!("could not tidy the logs: {e}"),
+            Ok(Ok(())) => {}
+        }
+        tokio::time::sleep(Duration::from_secs(10 * 60)).await;
     }
 }
 
