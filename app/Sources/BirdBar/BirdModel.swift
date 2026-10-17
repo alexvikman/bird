@@ -393,10 +393,8 @@ final class BirdModel: ObservableObject {
             } else if update?.available == true {
                 presentUpdate()
             } else {
-                showAlert(
-                    title: "You're up to date",
-                    text: "Bird \(update?.current ?? state?.birdVersion ?? "") is the latest version.",
-                    style: .informational)
+                NSApp.activate(ignoringOtherApps: true)
+                upToDateAlert().runModal()
             }
         }
     }
@@ -431,13 +429,27 @@ final class BirdModel: ObservableObject {
     }
 
     private func showAlert(title: String, text: String, style: NSAlert.Style) {
+        let alert = Self.makeAlert(title: title, text: text, style: style)
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
+    static func makeAlert(title: String, text: String, style: NSAlert.Style) -> NSAlert {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = text
         alert.alertStyle = style
+        alert.icon = NSApp.applicationIconImage
         alert.addButton(withTitle: "OK")
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
+        return alert
+    }
+
+    /// The answer when there is no update (also used by the snapshot).
+    func upToDateAlert() -> NSAlert {
+        Self.makeAlert(
+            title: "You're up to date!",
+            text: "Bird \(update?.current ?? state?.birdVersion ?? "") is the latest version.",
+            style: .informational)
     }
 
     /// Release notes are Markdown; an alert shows plain text. Keeps the list,

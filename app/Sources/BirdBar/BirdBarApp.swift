@@ -146,10 +146,7 @@ enum Snapshot {
     static func updateAlert(to url: URL) async {
         let model = BirdModel()
         await model.checkForUpdates()
-        guard let alert = model.makeUpdateAlert() else {
-            print("no update available to show")
-            return
-        }
+        let alert = model.makeUpdateAlert() ?? model.upToDateAlert()
         alert.layout()
         guard let view = alert.window.contentView,
               let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }

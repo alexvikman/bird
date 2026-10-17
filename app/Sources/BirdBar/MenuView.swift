@@ -92,6 +92,7 @@ struct MenuContent: View {
             .keyboardShortcut(",")
         Button("Check for Updates…") { model.checkForUpdatesInteractively() }
             .keyboardShortcut("u")
+        Button("About Bird…") { show(.about) }
         Button("Open Log") { model.openLog() }
 
         Divider()

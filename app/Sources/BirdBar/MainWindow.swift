@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 enum Pane: String, CaseIterable, Identifiable {
-    case sites, proxies, folders, php, settings
+    case sites, proxies, folders, php, settings, about
     var id: String { rawValue }
 
     var title: String {
@@ -12,6 +12,7 @@ enum Pane: String, CaseIterable, Identifiable {
         case .folders: "Folders"
         case .php: "PHP"
         case .settings: "Settings"
+        case .about: "About"
         }
     }
 
@@ -22,6 +23,7 @@ enum Pane: String, CaseIterable, Identifiable {
         case .folders: "folder"
         case .php: "chevron.left.forwardslash.chevron.right"
         case .settings: "gearshape"
+        case .about: "info.circle"
         }
     }
 }
@@ -63,6 +65,7 @@ struct MainWindow: View {
                     case .folders: FoldersPane(model: model, state: state)
                     case .php: PhpPane(model: model, state: state)
                     case .settings: SettingsPane(model: model, state: state)
+                    case .about: AboutPane(model: model, state: state)
                     }
                 } else {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -647,9 +650,6 @@ struct UpdatesSection: View {
     let state: BirdState
 
     var body: some View {
-        LabeledContent("Version") {
-            Text("Bird \(state.birdVersion)").textSelection(.enabled)
-        }
         HStack(alignment: .center, spacing: 8) {
             status
             Spacer()
@@ -662,19 +662,17 @@ struct UpdatesSection: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(model.updating)
             }
-            Button("Check for Updates") {
-                Task { await model.checkForUpdates() }
-            }
-            .disabled(model.checkingForUpdate || model.updating)
+            Button("Check for Updates…") { model.checkForUpdatesInteractively() }
+                .disabled(model.checkingForUpdate || model.updating)
         }
         if let error = model.updateError {
             ErrorText(error: error)
         }
-        Toggle("Check for updates when Bird starts", isOn: Binding(
+        Toggle("Check for updates automatically", isOn: Binding(
             get: { model.checkOnLaunch },
             set: { model.checkOnLaunch = $0 }
         ))
-        .help("Only checks and tells you; updates are never installed without a click.")
+        .help("At launch and once a day. Only checks and tells you; updates are never installed without a click.")
     }
 
     @ViewBuilder
@@ -710,6 +708,91 @@ struct UpdatesSection: View {
     }
 }
 
+// MARK: - About
+
+struct AboutPane: View {
+    @ObservedObject var model: BirdModel
+    let state: BirdState
+
+    static let repository = "https://github.com/alexvikman/bird"
+
+    var body: some View {
+        Form {
+            Section {
+                VStack(spacing: 4) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable()
+                        .frame(width: 96, height: 96)
+                    Text("Bird").font(.title2.weight(.semibold))
+                    Text(version).foregroundStyle(.secondary).textSelection(.enabled)
+                    if let built = Self.buildDate {
+                        Text("Built \(built.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("Local PHP sites on .\(state.tld), and nothing more.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 2)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+            }
+            Section("Updates") {
+                UpdatesSection(model: model, state: state)
+            }
+            Section("Links") {
+                link("GitHub", icon: "chevron.left.forwardslash.chevron.right", Self.repository)
+                link("Release Notes", icon: "doc.text", "\(Self.repository)/releases")
+                link("Report an Issue", icon: "exclamationmark.bubble", "\(Self.repository)/issues")
+                link("License", icon: "checkmark.seal", "\(Self.repository)/blob/main/LICENSE")
+            }
+            Section {
+                Text("© 2026 Alexander Vikman. MIT License.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("About")
+    }
+
+    /// "Version 0.4.6"; the app's own version too if it differs from bird's.
+    private var version: String {
+        let app = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        if let app, app != state.birdVersion {
+            return "Version \(state.birdVersion) (app \(app))"
+        }
+        return "Version \(state.birdVersion)"
+    }
+
+    /// When this copy of the app was built (its executable's date).
+    private static var buildDate: Date? {
+        guard let path = Bundle.main.executablePath else { return nil }
+        return (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+    }
+
+    private func link(_ title: String, icon: String, _ url: String) -> some View {
+        Button {
+            model.open(url)
+        } label: {
+            HStack {
+                Label {
+                    Text(title)
+                } icon: {
+                    // Fixed width, so the titles line up whatever the symbol.
+                    Image(systemName: icon).frame(width: 20)
+                }
+                Spacer()
+                Image(systemName: "arrow.up.right").foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 // MARK: - Settings
 
 struct SettingsPane: View {
@@ -720,9 +803,6 @@ struct SettingsPane: View {
         Form {
             Section("PHP") {
                 QuickSettings(model: model, state: state)
-            }
-            Section("Updates") {
-                UpdatesSection(model: model, state: state)
             }
             Section("Bird") {
                 LabeledContent("Status", value: statusLine(state))
