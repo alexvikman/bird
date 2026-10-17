@@ -446,6 +446,10 @@ final class BirdModel: ObservableObject {
         process.standardError = handle
         var env = ProcessInfo.processInfo.environment
         env["NO_COLOR"] = "1"
+        // Update this copy of the app, wherever it is.
+        if Bundle.main.bundleURL.pathExtension == "app" {
+            env["BIRD_APP"] = Bundle.main.bundlePath
+        }
         process.environment = env
         // Only reached when this app survives the update (e.g. it failed).
         process.terminationHandler = { [weak self] finished in

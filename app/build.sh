@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds Bird.app (the menu bar app) into app/build/. It installs nothing:
-# move it to /Applications yourself if you want to use that build. Releases
-# update the Bird.app in /Applications (`bird self-update`).
+# move it to /Applications yourself if you want to use that build. Update in
+# the app updates that copy; `bird self-update` in a terminal updates the one
+# in /Applications.
 # Needs only the Xcode command line tools. The app is signed ad hoc, which is
 # enough to run it on this Mac.
 set -euo pipefail

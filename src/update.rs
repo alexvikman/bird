@@ -230,15 +230,24 @@ pub fn self_update(check_only: bool) -> Result<()> {
     Ok(())
 }
 
-/// The Bird.app to update: the one in /Applications, else one in
+/// The Bird.app to update: the one that started this update (Bird.app passes
+/// its own path in $BIRD_APP), else the one in /Applications, else one in
 /// ~/Applications (where earlier versions of build.sh installed it).
 fn installed_app() -> Option<PathBuf> {
-    [
-        PathBuf::from("/Applications/Bird.app"),
-        user_home().join("Applications/Bird.app"),
-    ]
-    .into_iter()
-    .find(|p| p.join("Contents/MacOS/Bird").is_file())
+    find_app(
+        std::env::var_os("BIRD_APP").map(PathBuf::from),
+        &user_home(),
+    )
+}
+
+fn find_app(from_app: Option<PathBuf>, home: &Path) -> Option<PathBuf> {
+    from_app
+        .into_iter()
+        .chain([
+            PathBuf::from("/Applications/Bird.app"),
+            home.join("Applications/Bird.app"),
+        ])
+        .find(|p| p.join("Contents/MacOS/Bird").is_file())
 }
 
 /// Unpacks a zipped Bird.app next to the installed one and swaps it in,
@@ -306,6 +315,20 @@ mod tests {
         assert!(is_newer("1.0.0", "0.99.99"));
         assert!(!is_newer("0.1.0", "0.1.0"));
         assert!(!is_newer("0.1.0", "0.2.0"));
+    }
+
+    #[test]
+    fn updates_the_app_that_asked() {
+        let dir = std::env::temp_dir().join(format!("bird-find-app-{}", std::process::id()));
+        let app = dir.join("Somewhere/Bird.app");
+        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        std::fs::write(app.join("Contents/MacOS/Bird"), "").unwrap();
+        let home = dir.join("home");
+        assert_eq!(find_app(Some(app.clone()), &home), Some(app));
+        // A path without an app falls back to the usual places.
+        let gone = dir.join("Gone/Bird.app");
+        assert_ne!(find_app(Some(gone.clone()), &home), Some(gone));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
