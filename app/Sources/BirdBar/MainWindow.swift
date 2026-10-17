@@ -76,7 +76,12 @@ struct MainWindow: View {
     var body: some View {
         NavigationSplitView {
             List(Pane.allCases, selection: selection) { pane in
-                Label { Text(pane.title) } icon: { PaneIcon(pane: pane) }.tag(pane)
+                HStack(spacing: 10) {
+                    PaneIcon(pane: pane)
+                    Text(pane.title)
+                }
+                .padding(.vertical, 3)
+                .tag(pane)
             }
             .navigationSplitViewColumnWidth(min: 160, ideal: 180)
             .safeAreaInset(edge: .bottom) {
