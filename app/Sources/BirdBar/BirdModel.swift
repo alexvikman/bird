@@ -146,17 +146,32 @@ final class BirdModel: ObservableObject {
         Timer.scheduledTimer(withTimeInterval: 60 * 60, repeats: true) { [weak self] _ in
             Task { await self?.checkIfDue() }
         }
-        // Keep the menu bar icon roughly in sync while the menu is closed.
-        // The menu is a native menu that can't refresh when it opens, so poll.
-        Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        // The menu is a native menu that can't refresh when it opens. Instead
+        // of polling, refresh when Bird's directories change (see
+        // watchBirdHome); this rare look is only a safety net.
+        Timer.scheduledTimer(withTimeInterval: 5 * 60, repeats: true) { [weak self] _ in
             Task { await self?.refresh() }
         }
     }
 
     func refresh() async {
-        guard !refreshing else { return }
+        if refreshing {
+            refreshQueued = true
+            return
+        }
         refreshing = true
-        defer { refreshing = false }
+        repeat {
+            refreshQueued = false
+            await refreshOnce()
+        } while refreshQueued
+        refreshing = false
+        watchBirdHome()
+    }
+
+    private var refreshQueued = false
+    private var lastStateData: Data?
+
+    private func refreshOnce() async {
         guard FileManager.default.isExecutableFile(atPath: bird.path) else {
             state = nil
             error = "Bird is not installed. Run `bird install` in Terminal."
@@ -167,13 +182,61 @@ final class BirdModel: ObservableObject {
             error = result.err.isEmpty ? "`bird state` failed" : result.err
             return
         }
+        // Unchanged: don't publish, which would redraw the menu and icon.
+        if data == lastStateData, state != nil { return }
         do {
             let decoder = JSONDecoder()
             decoder.keyDecodingStrategy = .convertFromSnakeCase
             state = try decoder.decode(BirdState.self, from: data)
+            lastStateData = data
             error = nil
         } catch {
             self.error = "Unexpected output from `bird state`: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: Watching ~/.bird
+
+    /// Directories whose entries change when something the app shows changes:
+    /// ~/.bird (config.toml is replaced on save), run/ (the daemon's socket
+    /// and PHP-FPM pools' sockets and pid files) and php/ (installs).
+    private var watchers: [String: DispatchSourceFileSystemObject] = [:]
+    private var pendingRefresh: Task<Void, Never>?
+
+    private func watchBirdHome() {
+        let home = state.map { URL(fileURLWithPath: $0.birdHome) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".bird")
+        for dir in [home, home.appendingPathComponent("run"), home.appendingPathComponent("php")] {
+            let path = dir.path
+            guard watchers[path] == nil else { continue }
+            let fd = Darwin.open(path, O_EVTONLY)
+            guard fd >= 0 else { continue }  // not there yet; tried again after the next refresh
+            let source = DispatchSource.makeFileSystemObjectSource(
+                fileDescriptor: fd, eventMask: [.write, .delete, .rename], queue: .main)
+            source.setEventHandler { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if !source.data.isDisjoint(with: DispatchSource.FileSystemEvent([.delete, .rename])) {
+                        // The directory itself went away; watch it again once it's back.
+                        source.cancel()
+                        self.watchers[path] = nil
+                    }
+                    self.scheduleRefresh()
+                }
+            }
+            source.setCancelHandler { close(fd) }
+            source.resume()
+            watchers[path] = source
+        }
+    }
+
+    /// One refresh for a burst of changes (a save writes a temp file and renames it).
+    private func scheduleRefresh() {
+        pendingRefresh?.cancel()
+        pendingRefresh = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.refresh()
         }
     }
 
