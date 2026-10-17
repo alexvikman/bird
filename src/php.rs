@@ -407,6 +407,9 @@ fn install_into(cfg: &Config, minor: &str, dir: &Path) -> Result<String> {
         }
     };
     write_managed_ini(minor, cfg.opcache)?;
+    if has_xdebug(minor) {
+        write_xdebug_ini(minor, cfg.xdebug == crate::config::XdebugMode::On)?;
+    }
     std::fs::write(dir.join("VERSION"), format!("{full}\n"))?;
     std::fs::write(dir.join("SOURCE"), format!("{source}\n"))?;
     match build_id {
@@ -449,6 +452,69 @@ pub fn write_managed_ini(minor: &str, opcache: bool) -> Result<()> {
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join(MANAGED_INI), managed_ini(opcache))?;
     Ok(())
+}
+
+pub fn xdebug_so(minor: &str) -> PathBuf {
+    paths().php_dir(minor).join("modules/xdebug.so")
+}
+
+pub fn pcov_so(minor: &str) -> PathBuf {
+    paths().php_dir(minor).join("modules/pcov.so")
+}
+
+pub fn has_xdebug(minor: &str) -> bool {
+    xdebug_so(minor).is_file()
+}
+
+/// Ini directory loading Xdebug, read before conf.d (so conf.d can
+/// override e.g. `xdebug.client_port`). Only the Xdebug pool and
+/// `bird debug` use it.
+pub fn xdebug_ini_dir(minor: &str) -> PathBuf {
+    paths().php_dir(minor).join("xdebug.d")
+}
+
+pub fn xdebug_ini(minor: &str, always: bool) -> String {
+    // On every request (`on`), profiling and tracing would write a file per
+    // request; with triggers (`auto`) they run only when asked for.
+    let (mode, start) = if always {
+        ("debug,develop", "yes")
+    } else {
+        ("debug,develop,profile,trace", "trigger")
+    };
+    format!(
+        "; Managed by Bird (`bird xdebug auto|on|off`). Loaded only by the Xdebug\n\
+         ; pool and `bird debug`; override settings in conf.d/99-local.ini.\n\
+         zend_extension = {so}\n\
+         xdebug.mode = {mode}\n\
+         xdebug.start_with_request = {start}\n\
+         xdebug.client_host = 127.0.0.1\n\
+         xdebug.client_port = 9003\n\
+         xdebug.output_dir = {out}\n",
+        so = xdebug_so(minor).display(),
+        out = paths().log().join("xdebug").display(),
+    )
+}
+
+pub fn write_xdebug_ini(minor: &str, always: bool) -> Result<()> {
+    let dir = xdebug_ini_dir(minor);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::create_dir_all(paths().log().join("xdebug"))?;
+    std::fs::write(dir.join("xdebug.ini"), xdebug_ini(minor, always))?;
+    Ok(())
+}
+
+/// PHP_INI_SCAN_DIR for running with Xdebug: xdebug.d, then conf.d.
+pub fn xdebug_scan_dirs(minor: &str) -> Result<std::ffi::OsString> {
+    if !has_xdebug(minor) {
+        bail!(
+            "PHP {minor} has no Xdebug; `bird php:update {minor}` installs Bird's build, which has it"
+        );
+    }
+    if !xdebug_ini_dir(minor).join("xdebug.ini").is_file() {
+        write_xdebug_ini(minor, false)?;
+    }
+    let dirs = [xdebug_ini_dir(minor), paths().php_conf_d(minor)];
+    Ok(std::env::join_paths(dirs)?)
 }
 
 /// Whether this PHP build has opcache compiled in (static-php's "common"

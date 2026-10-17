@@ -28,6 +28,15 @@ checks the files' modification times, so an edit shows up on the next request
 all versions. Bird's settings live in `~/.bird/php/<version>/conf.d/00-bird.ini`;
 override them in a later file such as `conf.d/99-local.ini`.
 
+Xdebug costs nothing until you ask for it. Each PHP version gets a second
+FPM pool with Xdebug loaded, started on demand; requests that carry an Xdebug
+trigger (the Xdebug browser extension's `XDEBUG_SESSION` cookie, or
+`?XDEBUG_SESSION=1`, `?XDEBUG_PROFILE=1`, `?XDEBUG_TRACE=1` in the URL) go
+there, everything else to the normal pool. Your IDE listens on port 9003;
+profiles and traces land in `~/.bird/log/xdebug`. `bird xdebug on` debugs
+every request, `off` ignores triggers. Xdebug's settings live in
+`~/.bird/php/<version>/xdebug.d/` and can be overridden in `conf.d/`.
+
 ## Commands
 
 ```
@@ -40,6 +49,9 @@ bird proxy NAME http://127.0.0.1:5173 | unproxy NAME
 bird use 8.4 | isolate 8.3 [--site NAME] | unisolate | which-php
 bird php:install 8.3 8.4 | php:list [--available] | php:update | php:remove 8.3
 bird opcache [on|off]                          # on by default; files revalidated every request
+bird xdebug [auto|on|off]                      # auto by default: Xdebug only when triggered
+bird debug artisan migrate                     # php with Xdebug, starts a debug session
+bird coverage vendor/bin/pest --coverage       # php with PCOV
 bird ini [VERSION] [--edit] | logs [bird|8.4] [-f] | tld [NAME] | open [NAME]
 bird php …  | bird composer …
 bird import herd [--install-php]

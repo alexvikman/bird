@@ -29,6 +29,8 @@ pub struct Config {
     /// Opcache for PHP-FPM (`bird opcache on|off`). It revalidates files on
     /// every request, so edits are picked up immediately.
     pub opcache: bool,
+    /// When requests run with Xdebug (`bird xdebug auto|on|off`).
+    pub xdebug: XdebugMode,
     /// Where PHP builds are downloaded from: Bird's own release (with
     /// manifest.json), or a dl.static-php.dev distribution.
     pub php_mirror: String,
@@ -38,6 +40,19 @@ pub struct Config {
     pub sites: BTreeMap<String, SiteConfig>,
     /// Reverse proxies, keyed by site name.
     pub proxies: BTreeMap<String, ProxyConfig>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum XdebugMode {
+    /// Only requests that carry an Xdebug trigger (the browser extension's
+    /// XDEBUG_SESSION cookie, or ?XDEBUG_SESSION=1) go to the Xdebug pool.
+    #[default]
+    Auto,
+    /// Every request runs with Xdebug and starts a debug session.
+    On,
+    /// Never, triggers are ignored.
+    Off,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -78,6 +93,7 @@ impl Default for Config {
             dns_port: 53535,
             php_idle_minutes: 30,
             opcache: true,
+            xdebug: XdebugMode::Auto,
             php_mirror: crate::php::DEFAULT_MIRROR.into(),
             paths: Vec::new(),
             sites: BTreeMap::new(),

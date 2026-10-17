@@ -15,8 +15,10 @@ use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::Incoming;
 use tower::ServiceExt;
 
+use crate::config::XdebugMode;
 use crate::daemon::State;
 use crate::fastcgi;
+use crate::php;
 use crate::proxy;
 use crate::sites::{self, Site, Target};
 
@@ -319,7 +321,14 @@ async fn serve_php(
             "No PHP version is configured. Run <code>bird php:install 8.4</code>.",
         ));
     };
-    let socket = match state.fpm.socket_for(&version).await {
+    let xdebug = match cfg.xdebug {
+        XdebugMode::Off => false,
+        XdebugMode::On => true,
+        XdebugMode::Auto => wants_xdebug(req.headers(), req.uri()),
+    };
+    // Builds without Xdebug (static-php ones from Bird 0.1) serve normally.
+    let xdebug = xdebug && php::has_xdebug(&version);
+    let socket = match state.fpm.socket_for(&version, xdebug).await {
         Ok(s) => s,
         Err(e) => {
             return Ok(error_page(
@@ -435,7 +444,7 @@ async fn serve_php(
     let stream = match tokio::net::UnixStream::connect(&socket).await {
         Ok(s) => s,
         Err(e) => {
-            state.fpm.mark_broken(&version).await;
+            state.fpm.mark_broken(&version, xdebug).await;
             anyhow::bail!("could not connect to php-fpm {version}: {e}");
         }
     };
@@ -452,6 +461,33 @@ async fn serve_php(
         resp.body
     };
     Ok(builder.body(body)?)
+}
+
+/// Names Xdebug treats as triggers, in a cookie or the query string.
+const XDEBUG_TRIGGERS: &[&str] = &[
+    "XDEBUG_SESSION",
+    "XDEBUG_SESSION_START",
+    "XDEBUG_PROFILE",
+    "XDEBUG_TRACE",
+    "XDEBUG_TRIGGER",
+];
+
+/// Whether a request asks for Xdebug: the browser extension's cookie, or
+/// `?XDEBUG_SESSION=1` / `?XDEBUG_PROFILE=1` / … in the URL.
+pub fn wants_xdebug(headers: &http::HeaderMap, uri: &http::Uri) -> bool {
+    let in_query = uri.query().is_some_and(|q| {
+        q.split('&')
+            .map(|pair| pair.split('=').next().unwrap_or(""))
+            .any(|key| XDEBUG_TRIGGERS.contains(&key))
+    });
+    let in_cookie = headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .map(|c| c.trim().split('=').next().unwrap_or(""))
+        .any(|name| XDEBUG_TRIGGERS.contains(&name) && name != "XDEBUG_SESSION_START");
+    in_query || in_cookie
 }
 
 pub fn html_escape(s: &str) -> String {
@@ -555,6 +591,32 @@ mod tests {
         assert_eq!(locate(&root, "/css/../.env"), Located::Forbidden);
         assert_eq!(locate(&root, "/%2e%2e/etc/passwd"), Located::Forbidden);
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn detects_xdebug_triggers() {
+        let uri = |s: &str| s.parse::<http::Uri>().unwrap();
+        let cookies = |c: &str| {
+            let mut h = http::HeaderMap::new();
+            h.insert(header::COOKIE, c.parse().unwrap());
+            h
+        };
+        let none = http::HeaderMap::new();
+        assert!(wants_xdebug(
+            &cookies("a=1; XDEBUG_SESSION=PHPSTORM"),
+            &uri("/")
+        ));
+        assert!(wants_xdebug(&none, &uri("/x?a=1&XDEBUG_SESSION=1")));
+        assert!(wants_xdebug(&none, &uri("/x?XDEBUG_PROFILE")));
+        assert!(wants_xdebug(&none, &uri("/x?XDEBUG_SESSION_START=vscode")));
+        assert!(!wants_xdebug(
+            &none,
+            &uri("/x?xdebug=1&MY_XDEBUG_SESSION=1")
+        ));
+        assert!(!wants_xdebug(
+            &cookies("laravel_session=abc; XDEBUG_SESSIONX=1"),
+            &uri("/")
+        ));
     }
 
     #[test]

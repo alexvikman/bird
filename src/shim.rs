@@ -57,7 +57,7 @@ pub fn current_version() -> Result<String> {
 pub fn php_command(version: &str) -> Result<Command> {
     let bin = paths().php_binary(version);
     if !bin.is_file() {
-        bail!("PHP {version} is not installed. Install it with: bird php install {version}");
+        bail!("PHP {version} is not installed. Install it with: bird php:install {version}");
     }
     let mut cmd = Command::new(bin);
     cmd.env("PHPRC", paths().php_dir(version))
@@ -67,6 +67,33 @@ pub fn php_command(version: &str) -> Result<Command> {
 
 pub fn exec_php(version: &str, args: Vec<OsString>) -> Result<()> {
     let err = php_command(version)?.args(args).exec();
+    Err(err).context("could not run php")
+}
+
+/// `php` with Xdebug loaded and a debug session started (`bird debug`).
+pub fn exec_php_xdebug(version: &str, args: Vec<OsString>) -> Result<()> {
+    let err = php_command(version)?
+        .env("PHP_INI_SCAN_DIR", php::xdebug_scan_dirs(version)?)
+        .args(["-d", "xdebug.start_with_request=yes"])
+        .args(args)
+        .exec();
+    Err(err).context("could not run php")
+}
+
+/// `php` with PCOV loaded for code coverage (`bird coverage`).
+pub fn exec_php_coverage(version: &str, args: Vec<OsString>) -> Result<()> {
+    let so = php::pcov_so(version);
+    if !so.is_file() {
+        bail!(
+            "PHP {version} has no PCOV; `bird php:update {version}` installs Bird's build, which has it"
+        );
+    }
+    let err = php_command(version)?
+        .arg("-d")
+        .arg(format!("extension={}", so.display()))
+        .args(["-d", "pcov.enabled=1"])
+        .args(args)
+        .exec();
     Err(err).context("could not run php")
 }
 

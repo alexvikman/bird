@@ -143,6 +143,23 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<OsString>,
     },
+    /// Run PHP with Xdebug and start a debug session, e.g. `bird debug artisan migrate`
+    #[command(disable_help_flag = true)]
+    Debug {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<OsString>,
+    },
+    /// Run PHP with PCOV for code coverage, e.g. `bird coverage vendor/bin/pest --coverage`
+    #[command(disable_help_flag = true)]
+    Coverage {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<OsString>,
+    },
+    /// When web requests run with Xdebug: auto (on a trigger, default), on or off
+    Xdebug {
+        #[arg(value_parser = ["auto", "on", "off"])]
+        mode: Option<String>,
+    },
     /// Run Composer with the PHP version for the current directory
     #[command(disable_help_flag = true)]
     Composer {
@@ -246,6 +263,9 @@ pub fn main() -> Result<()> {
         Command::Ini { version, edit } => ini(version, edit),
         Command::Php { args } => shim::exec_php(&shim::current_version()?, args),
         Command::Composer { args } => shim::exec_composer(&shim::current_version()?, args),
+        Command::Debug { args } => shim::exec_php_xdebug(&shim::current_version()?, args),
+        Command::Coverage { args } => shim::exec_php_coverage(&shim::current_version()?, args),
+        Command::Xdebug { mode } => xdebug(mode.as_deref()),
 
         Command::Tld { tld } => set_tld(tld),
         Command::Logs { which, follow } => logs(which, follow),
@@ -656,6 +676,61 @@ fn opcache(state: Option<&str>) -> Result<()> {
         if !php::has_opcache(&i.minor) {
             ui::warn(format!(
                 "PHP {} ({}) has no opcache compiled in; `bird php:update {}` installs Bird's build",
+                i.version, i.source, i.minor
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn xdebug(mode: Option<&str>) -> Result<()> {
+    use crate::config::XdebugMode;
+    let mut cfg = Config::load()?;
+    if let Some(mode) = mode {
+        cfg.xdebug = match mode {
+            "on" => XdebugMode::On,
+            "off" => XdebugMode::Off,
+            _ => XdebugMode::Auto,
+        };
+        cfg.save()?;
+        for i in php::installed() {
+            if php::has_xdebug(&i.minor) {
+                php::write_xdebug_ini(&i.minor, cfg.xdebug == XdebugMode::On)?;
+            }
+        }
+        if control::is_running() {
+            control::send(json!({"cmd": "restart-php"}))?;
+        }
+    }
+    match cfg.xdebug {
+        XdebugMode::Auto => {
+            println!(
+                "xdebug is {}: requests with an Xdebug trigger run with Xdebug, all others without",
+                green("auto")
+            );
+            println!(
+                "  {}",
+                dim(
+                    "trigger: the Xdebug browser extension (XDEBUG_SESSION cookie) or ?XDEBUG_SESSION=1 in the URL"
+                )
+            );
+        }
+        XdebugMode::On => println!(
+            "xdebug is {}: every request runs with Xdebug and starts a debug session",
+            yellow("on")
+        ),
+        XdebugMode::Off => println!("xdebug is {}", dim("off")),
+    }
+    if cfg.xdebug != XdebugMode::Off {
+        println!(
+            "  {}",
+            dim("your IDE listens on port 9003; profiles and traces go to ~/.bird/log/xdebug")
+        );
+    }
+    for i in php::installed() {
+        if !php::has_xdebug(&i.minor) {
+            ui::warn(format!(
+                "PHP {} ({}) has no Xdebug; `bird php:update {}` installs Bird's build",
                 i.version, i.source, i.minor
             ));
         }
