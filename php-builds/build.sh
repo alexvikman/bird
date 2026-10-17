@@ -27,6 +27,8 @@ spc_sha256() {
     case "$SPC_VERSION/$1" in
         2.8.5/spc-macos-aarch64.tar.gz) echo acf2f25d56d0cbf8e65aa82e5054fef555f7be7c5c38046c6e0819f266d83225 ;;
         2.8.5/spc-macos-x86_64.tar.gz)  echo e8b798048f62ca4960764196543b60ae703f7174aa418824cf542aeec1d2cd6a ;;
+        2.8.5/spc-linux-aarch64.tar.gz) echo 675a3840dcdc4ed041fe20eaa54310ce019a9984c1c03951df9ec66df5795213 ;;
+        2.8.5/spc-linux-x86_64.tar.gz)  echo 523ba4279c54c7a377156c0dd3a36adf92ee64b01e9a7f5e9e2ec084b8e458e5 ;;
         *) echo "${SPC_SHA256:-}" ;;
     esac
 }
@@ -38,27 +40,31 @@ out="$here/dist"
 die() { echo "error: $*" >&2; exit 1; }
 log() { printf '\n==> %s\n' "$*" >&2; }
 
-# Whether PHP $minor satisfies a condition from a list file: "" (always),
-# ">=8.3" or "<8.3". (sed, not head: head exiting early would SIGPIPE sort
-# and fail under pipefail.)
+# Whether this build matches the conditions of a list-file line: nothing
+# (always), PHP versions (">=8.3", "<8.3") and/or an OS ("macos", "linux"),
+# separated by spaces; all must hold. (sed, not head: head exiting early
+# would SIGPIPE sort and fail under pipefail.)
 applies() {
-    local cond="$1" ver lowest
-    case "$cond" in
-        "") return 0 ;;
-        ">="*) ver="${cond#>=}" ;;
-        "<"*) ver="${cond#<}" ;;
-        *) die "bad PHP version condition '$cond'" ;;
-    esac
-    [[ "$ver" =~ ^[0-9]+\.[0-9]+$ ]] || die "bad PHP version condition '$cond'"
-    lowest="$(printf '%s\n%s\n' "$minor" "$ver" | sort -V | sed -n 1p)"
-    case "$cond" in
-        ">="*) [ "$lowest" = "$ver" ] ;;
-        *) [ "$lowest" = "$minor" ] && [ "$minor" != "$ver" ] ;;
-    esac
+    local cond ver lowest
+    for cond in $1; do
+        case "$cond" in
+            macos | linux) [ "$os" = "$cond" ] || return 1; continue ;;
+            ">="*) ver="${cond#>=}" ;;
+            "<"*) ver="${cond#<}" ;;
+            *) die "bad condition '$cond'" ;;
+        esac
+        [[ "$ver" =~ ^[0-9]+\.[0-9]+$ ]] || die "bad PHP version condition '$cond'"
+        lowest="$(printf '%s\n%s\n' "$minor" "$ver" | sort -V | sed -n 1p)"
+        case "$cond" in
+            ">="*) [ "$lowest" = "$ver" ] || return 1 ;;
+            *) { [ "$lowest" = "$minor" ] && [ "$minor" != "$ver" ]; } || return 1 ;;
+        esac
+    done
+    return 0
 }
 
 # Reads a list file: one item per line, '#' comments and blank lines ignored,
-# optionally followed by a PHP version condition (see applies).
+# optionally followed by conditions (see applies).
 read_list() {
     local name cond
     while read -r name cond; do
@@ -82,14 +88,22 @@ mkdir -p "$out" "$work"
 out="$(cd "$out" && pwd)"   # absolute: we cd into the build tree below
 work="$(cd "$work" && pwd)"
 
+# Oldest glibc the Linux builds run on (Debian 10, Ubuntu 20.04, RHEL 8).
+GLIBC_TARGET="2.28"
+
 case "$(uname -s)-$(uname -m)" in
     Darwin-arm64)  platform="macos-aarch64"; spc_asset="spc-macos-aarch64.tar.gz" ;;
     Darwin-x86_64) platform="macos-x86_64";  spc_asset="spc-macos-x86_64.tar.gz" ;;
-    # TODO(linux): spc builds Linux binaries in Docker (bin/spc-alpine-docker for
-    # musl, bin/spc-gnu-docker for glibc). Xdebug needs the glibc variant, since
-    # a fully static musl binary cannot dlopen extensions.
-    *) die "unsupported build host $(uname -s)-$(uname -m) (macOS only for now)" ;;
+    # On Linux, spc's zig toolchain links against an old glibc instead of
+    # building fully static musl binaries: those could not dlopen Xdebug.
+    Linux-aarch64) platform="linux-aarch64"; spc_asset="spc-linux-aarch64.tar.gz" ;;
+    Linux-x86_64)  platform="linux-x86_64";  spc_asset="spc-linux-x86_64.tar.gz" ;;
+    *) die "unsupported build host $(uname -s)-$(uname -m)" ;;
 esac
+os="${platform%%-*}"
+if [ "$os" = linux ]; then
+    export SPC_TARGET="native-native-gnu.$GLIBC_TARGET"
+fi
 
 # Resolve 8.4 -> latest 8.4.x from php.net.
 if [[ "$version" =~ ^[0-9]+\.[0-9]+$ ]]; then
@@ -108,7 +122,12 @@ minor="${full%.*}"
 # supports it. spc puts these flags last on the compiler command line, so the
 # -std here wins. (spc reads its env.ini settings from the environment.)
 if ! applies ">=8.4"; then
-    export SPC_CMD_VAR_PHP_MAKE_EXTRA_CFLAGS="-g -fstack-protector-strong -fpic -fpie -Werror=unknown-warning-option --target=$(uname -m)-apple-darwin -Os -std=gnu17"
+    if [ "$os" = macos ]; then
+        arch="$(uname -m)"
+        export SPC_CMD_VAR_PHP_MAKE_EXTRA_CFLAGS="-g -fstack-protector-strong -fpic -fpie -Werror=unknown-warning-option --target=$arch-apple-darwin -Os -std=gnu17"
+    else
+        export SPC_CMD_VAR_PHP_MAKE_EXTRA_CFLAGS="-g -fstack-protector-strong -fno-ident -fPIE -fPIC -Os -std=gnu17"
+    fi
 fi
 
 static_exts="$(read_list "$here/extensions.txt" | join_commas)"
@@ -266,10 +285,21 @@ for ext in $(read_list "$here/shared-extensions.txt"); do
     grep -qix "$ext" <<<"$loaded" || die "php-fpm cannot load $ext.so"
 done
 
-# Binaries must only depend on the OS, never on Homebrew or the build tree.
+# Binaries must only depend on the OS, never on Homebrew, distro packages or
+# the build tree.
 for bin in "$php" "$fpm" "$modules"/*.so; do
     [ -e "$bin" ] || continue
-    bad="$(otool -L "$bin" | tail -n +2 | awk '{print $1}' | grep -Ev '^(/usr/lib/|/System/)' || true)"
+    if [ "$os" = macos ]; then
+        bad="$(otool -L "$bin" | tail -n +2 | awk '{print $1}' | grep -Ev '^(/usr/lib/|/System/)' || true)"
+    else
+        # glibc's own libraries only, and no symbol newer than GLIBC_TARGET.
+        bad="$(readelf -d "$bin" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' |
+            grep -Ev '^(libc|libm|libdl|libpthread|librt|libresolv|libutil|ld-linux[^.]*)\.so' || true)"
+        newest="$(objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -n 1 || true)"
+        if [ -n "$newest" ] && [ "$(printf '%s\n%s\n' "$newest" "$GLIBC_TARGET" | sort -V | sed -n 2p)" != "$GLIBC_TARGET" ]; then
+            die "$(basename "$bin") needs glibc $newest, newer than $GLIBC_TARGET"
+        fi
+    fi
     [ -z "$bad" ] || die "$(basename "$bin") links against non-system libraries: $bad"
 done
 
@@ -298,7 +328,9 @@ fi
 [ -f "$licenses/licenses/src_php-src_0.txt" ] || die "license dump is missing PHP's license"
 
 pack() { # <archive name> <dir> <file>
-    tar --uid 0 --gid 0 --numeric-owner -czf "$out/$1" -C "$2" "$3" -C "$licenses" licenses
+    local owner=(--uid 0 --gid 0)                        # bsdtar (macOS)
+    [ "$os" = linux ] && owner=(--owner=0 --group=0)     # GNU tar
+    tar "${owner[@]}" --numeric-owner -czf "$out/$1" -C "$2" "$3" -C "$licenses" licenses
 }
 pack "php-$full-cli-$platform.tar.gz" "$build_dir/buildroot/bin" php
 pack "php-$full-fpm-$platform.tar.gz" "$build_dir/buildroot/bin" php-fpm

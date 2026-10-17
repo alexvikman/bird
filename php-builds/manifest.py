@@ -38,7 +38,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RECIPE_FILES = ["build.sh", "extensions.txt", "shared-extensions.txt", "libs.txt", "sources.txt"]
 
 # GitHub runner per platform.
-RUNNERS = {"macos-aarch64": "macos-15", "macos-x86_64": "macos-15-intel"}
+RUNNERS = {
+    "macos-aarch64": "macos-15",
+    "macos-x86_64": "macos-15-intel",
+    "linux-aarch64": "ubuntu-24.04-arm",
+    "linux-x86_64": "ubuntu-24.04",
+}
 
 
 def version_key(version):

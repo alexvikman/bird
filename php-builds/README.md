@@ -79,8 +79,11 @@ off by default. To enable it, Bird extracts `xdebug.so` (e.g. to
 `zend_extension=/path/to/xdebug.so` to an ini file. The `.so` only works with
 the `php`/`php-fpm` from the same build (same PHP version, same platform).
 
-On Linux the same only works with spc's glibc target (`bin/spc-gnu-docker`),
-not the default static musl build.
+On Linux the same only works when PHP links against glibc, not with spc's
+default fully static musl build. `build.sh` therefore builds Linux binaries
+with spc's zig toolchain for glibc 2.28 (`SPC_TARGET=native-native-gnu.2.28`),
+which runs on Debian 10+, Ubuntu 20.04+, RHEL 8+ and newer, and checks that no
+newer glibc symbol slipped in.
 
 ## Releases
 
@@ -133,7 +136,8 @@ without activity in the repository; re-enable it in the Actions tab.
 `licenses/` holds the licenses of PHP, the extensions and every bundled
 library (`spc dump-license`); Bird installs them to `~/.bird/php/<minor>/licenses/`.
 
-`<platform>` is `macos-aarch64` or `macos-x86_64` (as `platform()` in
+`<platform>` is `macos-aarch64`, `macos-x86_64`, `linux-aarch64` or
+`linux-x86_64` (as `platform()` in
 `src/php.rs`). Bird's default `php_mirror` is this release; it reads
 `manifest.json` and verifies every archive's size and sha256 before
 extracting it.
@@ -193,8 +197,6 @@ Installing PHP `8.4` on `macos-aarch64`, then, is:
 
 ## Not done yet
 
-- Linux builds (`linux-x86_64`, `linux-aarch64`): needs spc's Docker builds in
-  `build.sh`; glibc for Xdebug.
 - Signing/notarization. Bird downloads the archives itself, so they carry no
   quarantine attribute and Gatekeeper does not check them; the linker's ad-hoc
   signature is enough to run on Apple Silicon.

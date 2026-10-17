@@ -22,7 +22,7 @@ on:
       platforms:
         description: Platforms, comma separated
         type: string
-        default: "macos-aarch64,macos-x86_64"
+        default: "macos-aarch64,macos-x86_64,linux-aarch64,linux-x86_64"
       prebuilt-libs:
         description: Use spc's pre-built static libraries (faster, but trusts spc's binaries)
         type: boolean
@@ -61,7 +61,7 @@ jobs:
           # Scheduled runs have no inputs: all supported versions, only what is
           # missing from the release, and publish (see the publish job).
           VERSIONS: ${{ inputs.versions || '8.1,8.2,8.3,8.4,8.5' }}
-          PLATFORMS: ${{ inputs.platforms || 'macos-aarch64,macos-x86_64' }}
+          PLATFORMS: ${{ inputs.platforms || 'macos-aarch64,macos-x86_64,linux-aarch64,linux-x86_64' }}
           ONLY_MISSING: ${{ github.event_name == 'schedule' || inputs.only-missing }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -74,8 +74,6 @@ jobs:
               skip=(--skip-published published/manifest.json)
             fi
           fi
-          # TODO(linux): linux-x86_64 / linux-aarch64 runners in manifest.py,
-          # once build.sh supports spc's Docker builds.
           matrix="$(python3 php-builds/manifest.py matrix "$VERSIONS" "$PLATFORMS" "${skip[@]}")"
           echo "$matrix" | jq .
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
