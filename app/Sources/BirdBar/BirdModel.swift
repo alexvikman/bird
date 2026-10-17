@@ -401,6 +401,14 @@ final class BirdModel: ObservableObject {
 
     /// Dialog for an available update: Install Update, Later, Skip This Version.
     func presentUpdate() {
+        // From the menu this runs while the menu is still closing, and a modal
+        // alert started then never shows; start it on the next turn instead.
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated { self?.runUpdateDialog() }
+        }
+    }
+
+    private func runUpdateDialog() {
         guard let alert = makeUpdateAlert(), let latest = update?.latest else { return }
         NSApp.activate(ignoringOtherApps: true)
         switch alert.runModal() {
