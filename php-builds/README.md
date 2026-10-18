@@ -12,6 +12,7 @@ load Xdebug.
 | `libs.txt` | Extra libraries (gd: FreeType, JPEG, WebP) |
 | `sources.txt` | Pinned PECL sources with sha256 (otherwise spc takes the newest, even alphas) |
 | `build.sh` | Builds, tests and packages one PHP version on the current Mac |
+| `libde265-sse-only.php` | spc patch for linux-x86_64: libde265 without AVX kernels (see "Xdebug") |
 | `manifest.py` | Resolves versions from php.net; merges build metadata into `manifest.json` |
 | `../.github/workflows/php-builds.yml` | Builds PHP 8.1–8.5 × macOS arm64/x86_64 and publishes them |
 
@@ -85,6 +86,13 @@ with spc's zig toolchain for glibc 2.28 (`SPC_TARGET=native-native-gnu.2.28`),
 which runs on Debian 10+, Ubuntu 20.04+, RHEL 8+ and newer, and checks that no
 newer glibc symbol slipped in.
 
+zig's compiler-rt lacks the x86 CPU detection (`__cpu_model`,
+`__cpu_indicator_init`) that `__builtin_cpu_supports` needs. libde265
+(HEIC decoding for imagick, via libheif) uses it since 1.1.1 to pick its
+AVX2 / AVX-512 kernels, so on linux-x86_64 `build.sh` passes spc the patch
+script `libde265-sse-only.php`, which turns those kernels off; libde265 keeps
+its SSE4.1 code. macOS and linux-aarch64 build libde265 unchanged.
+
 ## Releases
 
 The workflow publishes to one rolling GitHub Release with the tag `php`
@@ -116,7 +124,8 @@ Every Monday at 04:00 UTC the workflow runs on its own and publishes (after
 approval, see "Signing"). It only
 builds what the published `manifest.json` lacks: a new PHP patch release, or
 every version when the build files changed. Each build records a **recipe id**
-(`manifest.py recipe`, a hash of `build.sh`, the list files and the pins), and
+(`manifest.py recipe`, a hash of `build.sh`, the list files, the pins and the
+patch script), and
 a published build only counts as current with the same recipe. So adding an
 extension or bumping a pin rebuilds everything the next Monday; a week with no
 new PHP releases builds nothing, asks for no approval and finishes in seconds.
