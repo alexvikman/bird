@@ -150,7 +150,7 @@ jobs:
           rm -f "$key"
           # The signature must verify against the keys compiled into this
           # release's bird, or `bird self-update` would refuse it.
-          awk '/^pub const RELEASE_KEYS/,/^];/' src/signing.rs |
+          awk '/^pub const RELEASE_KEYS/,/\];$/' src/signing.rs |
             grep -oE '"ssh-ed25519 [A-Za-z0-9+/=]+[^"]*"' | tr -d '"' |
             sed 's/^/bird-release /' > "$RUNNER_TEMP/allowed_signers"
           [ -s "$RUNNER_TEMP/allowed_signers" ] || { echo "src/signing.rs has no RELEASE_KEYS"; exit 1; }
