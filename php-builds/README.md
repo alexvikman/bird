@@ -89,8 +89,9 @@ newer glibc symbol slipped in.
 
 The workflow publishes to one rolling GitHub Release with the tag `php`
 (marked "not latest", so it never shadows Bird's own releases). Every archive
-has a unique name, so older patch versions stay downloadable; `manifest.json`
-is replaced on each publish:
+has a unique name (the version, platform and the start of its sha256), so
+older builds stay downloadable and a rebuild never replaces a file the live
+manifest points at; `manifest.json` is the only file replaced on a publish:
 
 ```
 https://github.com/<owner>/<repo>/releases/download/php/manifest.json

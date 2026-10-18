@@ -69,9 +69,14 @@ jobs:
           skip=()
           if [ "$ONLY_MISSING" = "true" ]; then
             mkdir -p published
-            # No release yet means nothing to skip.
-            if gh release download "$RELEASE_TAG" --pattern manifest.json --dir published; then
+            # No release yet means nothing to skip; any other error stops here
+            # rather than rebuilding (and republishing) everything.
+            if found="$(gh release view "$RELEASE_TAG" --json tagName 2>&1)"; then
+              gh release download "$RELEASE_TAG" --pattern manifest.json --dir published
               skip=(--skip-published published/manifest.json)
+            elif ! grep -q "release not found" <<<"$found"; then
+              echo "$found"
+              exit 1
             fi
           fi
           matrix="$(python3 php-builds/manifest.py matrix "$VERSIONS" "$PLATFORMS" "${skip[@]}")"
@@ -169,5 +174,7 @@ jobs:
       - name: Upload assets
         run: |
           # Archives first, so the manifest never points at missing files.
+          # Their names carry their sha256 (build.sh), so this never replaces
+          # a file the live manifest.json points at.
           gh release upload "$RELEASE_TAG" dist/*.tar.gz --clobber
           gh release upload "$RELEASE_TAG" dist/manifest.json --clobber

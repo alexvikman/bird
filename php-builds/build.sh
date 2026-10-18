@@ -355,10 +355,16 @@ import hashlib, json, os, sys
 out, full, minor, platform, spc_version, static_exts, shared, lock, recipe = sys.argv[1:10]
 
 def entry(name):
+    # The archive is renamed after its content (php-8.4.26-cli-macos-aarch64-
+    # <sha256 prefix>.tar.gz): a rebuild never replaces a file the published
+    # manifest.json points at, so installs keep working while a new build is
+    # uploaded, and the manifest is the only file a publish changes.
     path = os.path.join(out, name)
     with open(path, "rb") as f:
         digest = hashlib.sha256(f.read()).hexdigest()
-    return {"file": name, "sha256": digest, "size": os.path.getsize(path)}
+    final = name.removesuffix(".tar.gz") + "-" + digest[:12] + ".tar.gz"
+    os.replace(path, os.path.join(out, final))
+    return {"file": final, "sha256": digest, "size": os.path.getsize(os.path.join(out, final))}
 
 shared_exts = {}
 for line in shared.splitlines():
