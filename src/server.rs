@@ -450,11 +450,13 @@ async fn serve_php(
         }
         have_host |= key == "host";
         let sep = if key == "cookie" { "; " } else { ", " };
+        // Not to_str(): it refuses any byte >= 0x80, and browsers send UTF-8
+        // in cookies (`city=Göteborg`), which would drop the whole header.
         let value = parts
             .headers
             .get_all(name)
             .iter()
-            .filter_map(|v| v.to_str().ok())
+            .map(|v| String::from_utf8_lossy(v.as_bytes()))
             .collect::<Vec<_>>()
             .join(sep);
         params.push((
@@ -505,13 +507,12 @@ pub fn wants_xdebug(headers: &http::HeaderMap, uri: &http::Uri) -> bool {
             .map(|pair| pair.split('=').next().unwrap_or(""))
             .any(|key| XDEBUG_TRIGGERS.contains(&key))
     });
-    let in_cookie = headers
-        .get_all(header::COOKIE)
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|v| v.split(';'))
-        .map(|c| c.trim().split('=').next().unwrap_or(""))
-        .any(|name| XDEBUG_TRIGGERS.contains(&name) && name != "XDEBUG_SESSION_START");
+    let in_cookie = headers.get_all(header::COOKIE).iter().any(|v| {
+        String::from_utf8_lossy(v.as_bytes())
+            .split(';')
+            .map(|c| c.trim().split('=').next().unwrap_or(""))
+            .any(|name| XDEBUG_TRIGGERS.contains(&name) && name != "XDEBUG_SESSION_START")
+    });
     in_query || in_cookie
 }
 
@@ -659,6 +660,13 @@ mod tests {
             &cookies("laravel_session=abc; XDEBUG_SESSIONX=1"),
             &uri("/")
         ));
+        // A cookie with UTF-8 in it (as browsers send it) hides nothing.
+        let mut utf8 = http::HeaderMap::new();
+        utf8.insert(
+            header::COOKIE,
+            http::HeaderValue::from_bytes("city=Göteborg; XDEBUG_SESSION=1".as_bytes()).unwrap(),
+        );
+        assert!(wants_xdebug(&utf8, &uri("/")));
     }
 
     #[test]
