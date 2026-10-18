@@ -229,6 +229,8 @@ PY
 log "Building"
 build_flags=(--build-cli --build-fpm --with-libs="$libs")
 [ -n "$shared_exts" ] && build_flags+=(--build-shared="$shared_exts")
+# zig's compiler-rt lacks the x86 CPU detection libde265's AVX kernels need.
+[ "$platform" = linux-x86_64 ] && build_flags+=(--with-added-patch="$here/libde265-sse-only.php")
 "$spc" build "$static_exts" "${build_flags[@]}" ${spc_flags[@]+"${spc_flags[@]}"}
 
 php="$build_dir/buildroot/bin/php"

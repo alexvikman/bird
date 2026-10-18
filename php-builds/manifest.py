@@ -36,7 +36,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Everything that decides what a build contains. A change to any of these
 # gives a new recipe id, and the scheduled run rebuilds every version.
-RECIPE_FILES = ["build.sh", "extensions.txt", "shared-extensions.txt", "libs.txt", "sources.txt"]
+RECIPE_FILES = ["build.sh", "extensions.txt", "shared-extensions.txt", "libs.txt", "sources.txt", "libde265-sse-only.php"]
 
 # GitHub runner per platform.
 RUNNERS = {
