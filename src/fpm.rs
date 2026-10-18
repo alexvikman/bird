@@ -198,7 +198,16 @@ async fn spawn(version: &str, xdebug: bool) -> Result<Pool> {
         .append(true)
         .open(p.fpm_log(&name))?;
     tracing::info!("starting php-fpm {name}");
-    let mut child = Command::new(p.fpm_binary(version))
+    let mut command = Command::new(p.fpm_binary(version));
+    // Started from a tokio worker thread, which still holds the capability the
+    // systemd unit grants for binding ports 80/443: PHP must not get it.
+    #[cfg(target_os = "linux")]
+    // SAFETY: the closure only makes system calls (no allocation, no locks),
+    // so it is safe between fork and exec.
+    unsafe {
+        command.pre_exec(crate::sys::drop_capabilities);
+    }
+    let mut child = command
         .arg("--nodaemonize")
         .arg("--fpm-config")
         .arg(p.fpm_config(&name))

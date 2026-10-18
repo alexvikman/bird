@@ -337,59 +337,14 @@ async fn control_command(state: &Arc<State>, req: &serde_json::Value) -> serde_j
     }
 }
 
-/// The ports are bound; nothing (and no PHP worker) needs to bind privileged
-/// ports any more. Clears the ambient and effective capability the systemd
-/// unit grants.
+/// The ports are bound; nothing needs to bind privileged ports any more.
+/// Clears the capability the systemd unit grants, for this thread; php-fpm
+/// is started from tokio's worker threads, which still hold it, so fpm.rs
+/// clears it again in each php-fpm process before exec.
 #[cfg(target_os = "linux")]
 fn drop_bind_capability() {
-    // SAFETY: prctl with PR_CAP_AMBIENT_CLEAR_ALL takes only integers and
-    // touches no memory.
-    unsafe {
-        libc::prctl(
-            libc::PR_CAP_AMBIENT,
-            libc::PR_CAP_AMBIENT_CLEAR_ALL,
-            0,
-            0,
-            0,
-        );
-    }
-    // capset with an empty set: drop effective/permitted capabilities too.
-    #[repr(C)]
-    struct Header {
-        version: u32,
-        pid: i32,
-    }
-    #[repr(C)]
-    struct Data {
-        effective: u32,
-        permitted: u32,
-        inheritable: u32,
-    }
-    const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
-    let mut header = Header {
-        version: LINUX_CAPABILITY_VERSION_3,
-        pid: 0,
-    };
-    let data = [
-        Data {
-            effective: 0,
-            permitted: 0,
-            inheritable: 0,
-        },
-        Data {
-            effective: 0,
-            permitted: 0,
-            inheritable: 0,
-        },
-    ];
-    // SAFETY: header and data are #[repr(C)] in the kernel's layout for
-    // version 3 (a header and two data structs), and both outlive the call.
-    let rc = unsafe { libc::syscall(libc::SYS_capset, &mut header, data.as_ptr()) };
-    if rc != 0 {
-        tracing::warn!(
-            "could not drop capabilities: {}",
-            std::io::Error::last_os_error()
-        );
+    if let Err(e) = crate::sys::drop_capabilities() {
+        tracing::warn!("could not drop capabilities: {e}");
     }
 }
 

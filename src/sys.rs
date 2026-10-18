@@ -32,6 +32,56 @@ pub fn signal(pid: u32, signal: i32) -> std::io::Result<()> {
     }
 }
 
+/// Drops every capability (ambient, effective, permitted, inheritable) of
+/// the calling thread. Capabilities are per thread, so this only covers the
+/// thread that runs it; it is also safe to run between fork and exec (it only
+/// makes system calls), which is how php-fpm gets started without them.
+#[cfg(target_os = "linux")]
+pub fn drop_capabilities() -> std::io::Result<()> {
+    // SAFETY: prctl with PR_CAP_AMBIENT_CLEAR_ALL takes only integers and
+    // touches no memory. Its result is ignored: kernels before 4.3 have no
+    // ambient capabilities to clear.
+    unsafe {
+        libc::prctl(
+            libc::PR_CAP_AMBIENT,
+            libc::PR_CAP_AMBIENT_CLEAR_ALL,
+            0,
+            0,
+            0,
+        );
+    }
+    // capset with an empty set: drop effective/permitted capabilities too.
+    #[repr(C)]
+    struct Header {
+        version: u32,
+        pid: i32,
+    }
+    #[repr(C)]
+    struct Data {
+        effective: u32,
+        permitted: u32,
+        inheritable: u32,
+    }
+    const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+    let mut header = Header {
+        version: LINUX_CAPABILITY_VERSION_3,
+        pid: 0,
+    };
+    let empty = || Data {
+        effective: 0,
+        permitted: 0,
+        inheritable: 0,
+    };
+    let data = [empty(), empty()];
+    // SAFETY: header and data are #[repr(C)] in the kernel's layout for
+    // version 3 (a header and two data structs), and both outlive the call.
+    if unsafe { libc::syscall(libc::SYS_capset, &mut header, data.as_ptr()) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
