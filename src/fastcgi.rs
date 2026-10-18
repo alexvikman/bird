@@ -84,22 +84,33 @@ where
 
     let writer_task = tokio::spawn(async move {
         let mut body = body;
-        let mut begin = Vec::with_capacity(8);
-        begin.extend_from_slice(&ROLE_RESPONDER.to_be_bytes());
-        begin.extend_from_slice(&[0, 0, 0, 0, 0, 0]); // flags = 0: close after request
-        write_record(&mut writer, BEGIN_REQUEST, &begin).await?;
-        write_record(&mut writer, PARAMS, &encode_params(&params)).await?;
-        write_record(&mut writer, PARAMS, &[]).await?;
-        while let Some(frame) = body.frame().await {
-            let frame = frame.map_err(|e| std::io::Error::other(e.into()))?;
-            if let Ok(data) = frame.into_data() {
-                write_record(&mut writer, STDIN, &data).await?;
+        let sent: std::io::Result<()> = async {
+            let mut begin = Vec::with_capacity(8);
+            begin.extend_from_slice(&ROLE_RESPONDER.to_be_bytes());
+            begin.extend_from_slice(&[0, 0, 0, 0, 0, 0]); // flags = 0: close after request
+            write_record(&mut writer, BEGIN_REQUEST, &begin).await?;
+            write_record(&mut writer, PARAMS, &encode_params(&params)).await?;
+            write_record(&mut writer, PARAMS, &[]).await?;
+            while let Some(frame) = body.frame().await {
+                let frame = frame.map_err(|e| std::io::Error::other(e.into()))?;
+                if let Ok(data) = frame.into_data() {
+                    write_record(&mut writer, STDIN, &data).await?;
+                }
             }
+            write_record(&mut writer, STDIN, &[]).await?;
+            writer.flush().await
         }
-        write_record(&mut writer, STDIN, &[]).await?;
-        writer.flush().await?;
-        // Keep the write half alive until the reader is done; dropping it would
-        // not close the socket anyway, as the read half shares it.
+        .await;
+        if let Err(e) = sent {
+            // E.g. the client aborted its upload. Dropping the write half would
+            // not close the socket (the read half shares it), and php-fpm would
+            // wait for the rest of the body forever; half-close it instead, so
+            // php-fpm sees EOF, gives the worker back and closes, which also
+            // ends the read below.
+            let _ = writer.shutdown().await;
+            return Err(e);
+        }
+        // Keep the write half alive until the reader is done.
         Ok::<_, std::io::Error>(writer)
     });
 
@@ -324,6 +335,31 @@ mod tests {
         assert_eq!(resp.status, StatusCode::OK);
         let body = resp.body.collect().await.unwrap().to_bytes();
         assert_eq!(&body[..], b"got hello bytes");
+        fake.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_aborted_upload_ends_the_request() {
+        let (client, mut server) = tokio::io::duplex(1 << 16);
+        // php-fpm reads the request until the connection is half-closed, then
+        // closes it, as it does when its input ends early.
+        let fake = tokio::spawn(async move {
+            let mut got = Vec::new();
+            server.read_to_end(&mut got).await.unwrap();
+        });
+        // A body that fails after its first chunk, like an aborted upload.
+        let (mut tx, body) = http_body_util::channel::Channel::<Bytes, BoxError>::new(1);
+        tokio::spawn(async move {
+            tx.send_data(Bytes::from("part of a file")).await.unwrap();
+            tx.abort("client went away".into());
+        });
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            request(client, vec![("A".into(), "b".into())], body),
+        )
+        .await
+        .expect("the request must end, not wait for the rest of the body");
+        assert!(result.is_err());
         fake.await.unwrap();
     }
 }
