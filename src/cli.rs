@@ -1118,19 +1118,37 @@ fn set_tld(tld: Option<String>) -> Result<()> {
     if tld.is_empty() || !tld.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
         bail!("the TLD must be a single label like `test`");
     }
+    // Kept to undo the change if the privileged step fails: the daemon picks
+    // up config.toml at once, while /etc/resolver and the trusted CA would
+    // still be for the old TLD, and every site would be down.
+    let old_tld = cfg.tld.clone();
+    let old_ca = std::fs::read_to_string(paths().ca_cert())
+        .ok()
+        .zip(std::fs::read_to_string(paths().ca_key()).ok());
     cfg.tld = tld.clone();
     cfg.save()?;
-    ui::ok(format!("sites are now served as <name>.{tld}"));
     // The CA is name-constrained to the TLD, so a new TLD needs a new CA.
     let replaced = crate::tls::ensure_ca(&tld)? != crate::tls::CaStatus::Existing;
     if install::is_system_installed() {
         println!("Updating /etc/resolver and the trusted CA (needs sudo)…");
-        install::sudo_system_install()?;
+        if let Err(e) = install::sudo_system_install() {
+            cfg.tld = old_tld.clone();
+            cfg.save()?;
+            if replaced && let Some((cert, key)) = &old_ca {
+                crate::tls::restore_ca(cert, key)?;
+            }
+            return Err(e.context(format!("kept .{old_tld}")));
+        }
+        if cfg!(target_os = "linux") && replaced {
+            // Browsers on Linux use their own (per-user) certificate stores.
+            crate::linux::trust_ca_in_browsers();
+        }
     } else if replaced {
         ui::warn(format!(
             "made a new CA for *.{tld}; restart the daemon and run `bird install` to trust it"
         ));
     }
+    ui::ok(format!("sites are now served as <name>.{tld}"));
     Ok(())
 }
 

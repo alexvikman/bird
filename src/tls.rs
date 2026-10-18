@@ -100,6 +100,17 @@ fn generate_ca(tld: &str) -> Result<(String, String)> {
 }
 
 fn write_ca(tld: &str) -> Result<()> {
+    let (cert_pem, key_pem) = generate_ca(tld)?;
+    store_ca(&cert_pem, &key_pem)
+}
+
+/// Puts back a CA saved before it was replaced (`bird tld` when the
+/// privileged step fails).
+pub fn restore_ca(cert_pem: &str, key_pem: &str) -> Result<()> {
+    store_ca(cert_pem, key_pem)
+}
+
+fn store_ca(cert_pem: &str, key_pem: &str) -> Result<()> {
     // The CA is trusted system-wide, so its key must never be readable by others.
     let dir = paths().ca_dir();
     std::fs::DirBuilder::new()
@@ -107,7 +118,6 @@ fn write_ca(tld: &str) -> Result<()> {
         .mode(0o700)
         .create(&dir)?;
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
-    let (cert_pem, key_pem) = generate_ca(tld)?;
 
     // Create the key file as 0600 from the start (no window with umask
     // permissions), then move it into place.
