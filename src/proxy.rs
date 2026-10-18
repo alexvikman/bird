@@ -125,11 +125,22 @@ pub async fn forward(
     ))
 }
 
+/// How long an upstream may take to answer a WebSocket upgrade.
+const UPGRADE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 async fn forward_upgrade(
     authority: &Authority,
-    req: Request<ResponseBody>,
+    mut req: Request<ResponseBody>,
     client_upgrade: hyper::upgrade::OnUpgrade,
 ) -> Result<Response<ResponseBody>> {
+    // hyper's connection-level client sends the URI as it is, and upstreams
+    // (Vite's HMR, ws, socket.io) match the path of `GET /path`, not
+    // `GET http://host/path`; the pooled client does this conversion itself.
+    *req.uri_mut() = req
+        .uri()
+        .path_and_query()
+        .map_or("/", |p| p.as_str())
+        .parse()?;
     let addr = format!(
         "{}:{}",
         authority.host(),
@@ -145,7 +156,9 @@ async fn forward_upgrade(
             tracing::debug!("upstream upgrade connection: {e}");
         }
     });
-    let mut resp = sender.send_request(req).await?;
+    let mut resp = tokio::time::timeout(UPGRADE_TIMEOUT, sender.send_request(req))
+        .await
+        .context("the upstream did not answer the upgrade request")??;
     if resp.status() != StatusCode::SWITCHING_PROTOCOLS {
         let (parts, body) = resp.into_parts();
         return Ok(Response::from_parts(
@@ -181,5 +194,36 @@ mod tests {
         assert_eq!(a.as_str(), "localhost:8080");
         assert_eq!(p, "/app");
         assert!(parse_upstream("https://x").is_err());
+    }
+
+    #[tokio::test]
+    async fn upgrades_are_sent_with_a_path_not_a_url() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let upstream = tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let n = s.read(&mut buf).await.unwrap();
+            s.write_all(b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\n\r\n")
+                .await
+                .unwrap();
+            let head = String::from_utf8_lossy(&buf[..n]).to_string();
+            head.lines().next().unwrap().to_string()
+        });
+        let authority: Authority = addr.to_string().parse().unwrap();
+        let mut req = Request::builder()
+            .uri(format!("http://{addr}/hmr?token=1"))
+            .header(header::HOST, "vite.test")
+            .header(header::CONNECTION, "upgrade")
+            .header(header::UPGRADE, "websocket")
+            .body(empty())
+            .unwrap();
+        let client_upgrade = hyper::upgrade::on(&mut req);
+        let resp = forward_upgrade(&authority, req, client_upgrade)
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(upstream.await.unwrap(), "GET /hmr?token=1 HTTP/1.1");
     }
 }
