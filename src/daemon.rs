@@ -14,10 +14,10 @@ use anyhow::{Context, Result};
 use hyper::service::service_fn;
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto;
 use serde_json::json;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, UdpSocket, UnixListener};
 use tokio::sync::Notify;
 use tokio_rustls::TlsAcceptor;
@@ -109,6 +109,11 @@ pub fn run(http_port: Option<u16>, https_port: Option<u16>) -> Result<()> {
 
 async fn main(http_port: Option<u16>, https_port: Option<u16>) -> Result<()> {
     paths().ensure_dirs()?;
+    // launchd starts daemons with a soft limit of 256 open files, which
+    // connections, php-fpm sockets and log files use up quickly.
+    if let Err(e) = crate::sys::raise_open_files_limit() {
+        tracing::warn!("could not raise the open files limit: {e}");
+    }
     // A new version may need to migrate ~/.bird before the config is read.
     // If that fails, serve anyway: a daemon that exits takes every site down
     // and launchd/systemd would restart it in a loop.
@@ -224,19 +229,27 @@ async fn accept_loop(listener: TcpListener, state: Arc<State>, tls: Option<TlsAc
                 local,
             };
             let service = service_fn(move |req| server::handle(state.clone(), conn, req));
-            let builder = auto::Builder::new(TokioExecutor::new());
+            let mut builder = auto::Builder::new(TokioExecutor::new());
+            // Without a timer hyper silently skips its header read timeout, and
+            // a silent connection would hold its file descriptor forever.
+            builder.http1().timer(TokioTimer::new());
             let result = match tls {
-                Some(acceptor) => match acceptor.accept(stream).await {
-                    Ok(tls_stream) => {
-                        builder
-                            .serve_connection_with_upgrades(TokioIo::new(tls_stream), service)
-                            .await
+                Some(acceptor) => {
+                    match tokio::time::timeout(Duration::from_secs(10), acceptor.accept(stream))
+                        .await
+                        .unwrap_or_else(|_| Err(std::io::ErrorKind::TimedOut.into()))
+                    {
+                        Ok(tls_stream) => {
+                            builder
+                                .serve_connection_with_upgrades(TokioIo::new(tls_stream), service)
+                                .await
+                        }
+                        Err(e) => {
+                            tracing::debug!("tls handshake from {remote}: {e}");
+                            return;
+                        }
                     }
-                    Err(e) => {
-                        tracing::debug!("tls handshake from {remote}: {e}");
-                        return;
-                    }
-                },
+                }
                 None => {
                     builder
                         .serve_connection_with_upgrades(TokioIo::new(stream), service)
@@ -290,14 +303,25 @@ fn control_listener() -> Result<UnixListener> {
 
 async fn control_loop(listener: UnixListener, state: Arc<State>) {
     loop {
-        let Ok((stream, _)) = listener.accept().await else {
-            continue;
+        let stream = match listener.accept().await {
+            Ok((stream, _)) => stream,
+            Err(e) => {
+                // E.g. out of file descriptors: retrying at once would spin.
+                tracing::warn!("control accept: {e}");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
         };
         let state = state.clone();
         tokio::spawn(async move {
             let (read, mut write) = stream.into_split();
             let mut line = String::new();
-            if BufReader::new(read).read_line(&mut line).await.is_err() {
+            // One short JSON line per request; don't wait or buffer forever.
+            let mut reader = BufReader::new(read.take(64 << 10));
+            if !matches!(
+                tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut line)).await,
+                Ok(Ok(_))
+            ) {
                 return;
             }
             let reply = match serde_json::from_str::<serde_json::Value>(&line) {

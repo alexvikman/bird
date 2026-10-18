@@ -55,7 +55,11 @@ pub async fn handle(
         Ok(resp) => resp,
         Err(e) => {
             tracing::error!("{method} {host}{path}: {e:#}");
-            error_page(StatusCode::BAD_GATEWAY, "Bad gateway", &format!("{e:#}"))
+            error_page(
+                StatusCode::BAD_GATEWAY,
+                "Bad gateway",
+                &html_escape(&format!("{e:#}")),
+            )
         }
     };
     tracing::info!(
@@ -360,11 +364,24 @@ async fn serve_php(
             len,
         ),
         None if http_body::Body::size_hint(&body).exact() == Some(0) => (empty(), 0),
-        None => {
-            let bytes = body.collect().await?.to_bytes();
-            let len = bytes.len() as u64;
-            (full(bytes), len)
-        }
+        None => match http_body_util::Limited::new(body, MAX_BUFFERED_BODY)
+            .collect()
+            .await
+        {
+            Ok(collected) => {
+                let bytes = collected.to_bytes();
+                let len = bytes.len() as u64;
+                (full(bytes), len)
+            }
+            Err(e) if e.is::<http_body_util::LengthLimitError>() => {
+                return Ok(error_page(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "Request too large",
+                    "Requests without a Content-Length are buffered in memory, up to 256 MB.",
+                ));
+            }
+            Err(e) => return Err(anyhow::anyhow!(e)),
+        },
     };
 
     let server_name = host.split(':').next().unwrap_or(host).to_string();
@@ -497,6 +514,11 @@ pub fn wants_xdebug(headers: &http::HeaderMap, uri: &http::Uri) -> bool {
         .any(|name| XDEBUG_TRIGGERS.contains(&name) && name != "XDEBUG_SESSION_START");
     in_query || in_cookie
 }
+
+/// The most of a request body without Content-Length that is held in memory
+/// to count it (FastCGI needs the length first). Above PHP's own post_max_size
+/// default, so only runaway or endless bodies are refused.
+const MAX_BUFFERED_BODY: usize = 256 << 20;
 
 pub fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")

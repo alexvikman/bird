@@ -32,6 +32,29 @@ pub fn signal(pid: u32, signal: i32) -> std::io::Result<()> {
     }
 }
 
+/// Raises the soft limit on open files to the hard limit (at most 10240,
+/// the most macOS accepts even when the hard limit is "unlimited").
+pub fn raise_open_files_limit() -> std::io::Result<()> {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit only writes into `limit`, which we own.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let wanted = limit.rlim_max.min(10240);
+    if wanted <= limit.rlim_cur {
+        return Ok(());
+    }
+    limit.rlim_cur = wanted;
+    // SAFETY: setrlimit only reads `limit`, which outlives the call.
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// Drops every capability (ambient, effective, permitted, inheritable) of
 /// the calling thread. Capabilities are per thread, so this only covers the
 /// thread that runs it; it is also safe to run between fork and exec (it only
