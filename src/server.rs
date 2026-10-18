@@ -173,7 +173,8 @@ pub fn locate(docroot: &Path, url_path: &str) -> Located {
             prefix.push('/');
         }
         prefix.push_str(seg);
-        if seg.ends_with(".php") {
+        // Any case: on a case-insensitive filesystem (macOS) `x.PHP` is `x.php`.
+        if seg.to_ascii_lowercase().ends_with(".php") {
             let script = docroot.join(&prefix);
             if script.is_file() {
                 let rest = segments[i + 1..].join("/");
@@ -194,6 +195,13 @@ pub fn locate(docroot: &Path, url_path: &str) -> Located {
 
     let full = docroot.join(rel_path);
     if !rel.is_empty() && full.is_file() {
+        // PHP files are run or refused, never sent as source.
+        if full
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("php"))
+        {
+            return Located::Forbidden;
+        }
         return Located::Static(full);
     }
     if full.is_dir() {
@@ -523,7 +531,7 @@ mod tests {
     fn fixture() -> PathBuf {
         let root = std::env::temp_dir().join(format!("bird-locate-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        for dir in ["css", "wp-admin", "docs", "empty"] {
+        for dir in ["css", "wp-admin", "docs", "empty", "lib.php"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
         for file in [
@@ -532,6 +540,8 @@ mod tests {
             "wp-admin/index.php",
             "docs/index.html",
             "info.php",
+            "Config.PHP",
+            "lib.php/secret.PHP",
             ".env",
         ] {
             std::fs::write(root.join(file), "x").unwrap();
@@ -587,6 +597,16 @@ mod tests {
             locate(&root, "/docs/"),
             Located::Static(root.join("docs/index.html"))
         );
+        // PHP in any case is run or refused, never served as source.
+        assert_eq!(
+            locate(&root, "/Config.PHP"),
+            Located::Php {
+                script: root.join("Config.PHP"),
+                script_name: "/Config.PHP".into(),
+                path_info: "".into()
+            }
+        );
+        assert_eq!(locate(&root, "/lib.php/secret.PHP"), Located::Forbidden);
         assert_eq!(locate(&root, "/.env"), Located::Forbidden);
         assert_eq!(locate(&root, "/css/../.env"), Located::Forbidden);
         assert_eq!(locate(&root, "/%2e%2e/etc/passwd"), Located::Forbidden);

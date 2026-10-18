@@ -87,10 +87,26 @@ fn make_site(cfg: &Config, name: &str, path: PathBuf, kind: SiteKind) -> Site {
     }
 }
 
+/// Whether `name` is made of DNS labels (`app`, `api.app`): letters, digits,
+/// `-` and `_` between dots. Anything else (`/`, `\\`, `..`, an empty label)
+/// could make `parked.join(name)` point outside the parked folder.
+fn is_site_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.split('.').all(|label| {
+            !label.is_empty()
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        })
+}
+
 /// Looks up a site by name: linked sites first, then parked directories.
 pub fn find_site(cfg: &Config, name: &str) -> Option<Site> {
     if let Some(path) = cfg.sites.get(name).and_then(|s| s.path.clone()) {
         return Some(make_site(cfg, name, path, SiteKind::Linked));
+    }
+    if !is_site_name(name) {
+        return None;
     }
     for parked in &cfg.paths {
         let direct = parked.join(name);
@@ -151,6 +167,10 @@ pub fn resolve_host(cfg: &Config, host: &str) -> Option<Target> {
     let host = host.split(':').next().unwrap_or(host).to_ascii_lowercase();
     let host = host.trim_end_matches('.');
     let name = host.strip_suffix(&format!(".{}", cfg.tld))?;
+    // The Host header comes from the client: only real hostnames, never paths.
+    if !is_site_name(name) {
+        return None;
+    }
     for candidate in host_candidates(name) {
         if let Some(proxy) = cfg.proxies.get(candidate) {
             return Some(Target::Proxy(proxy.clone()));
@@ -200,6 +220,32 @@ mod tests {
         assert_eq!(slug("my-web"), "my-web");
         assert_eq!(slug("foo bar  baz"), "foo-bar-baz");
         assert_eq!(slug("-x-"), "x");
+    }
+
+    #[test]
+    fn hosts_that_are_paths_are_refused() {
+        let dir = std::env::temp_dir().join(format!("bird-sites-host-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("app")).unwrap();
+        let cfg = Config {
+            paths: vec![dir.clone()],
+            ..Config::default()
+        };
+        assert!(matches!(
+            resolve_host(&cfg, "app.test"),
+            Some(Target::Site(_))
+        ));
+        for host in [
+            "/etc.test",
+            "...test",
+            "../app.test",
+            "/users/x/.ssh.test",
+            "a\\b.test",
+        ] {
+            assert!(resolve_host(&cfg, host).is_none(), "{host}");
+        }
+        assert!(find_site(&cfg, "/etc").is_none());
+        assert!(find_site(&cfg, "..").is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
