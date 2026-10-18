@@ -694,11 +694,29 @@ fn default_ini(minor: &str) -> String {
          log_errors = On\n\
          \n\
          date.timezone = {tz}\n\
-         \n\
-         openssl.cafile = /etc/ssl/cert.pem\n\
-         curl.cainfo = /etc/ssl/cert.pem\n",
-        tz = system_timezone()
+         {ca}",
+        tz = system_timezone(),
+        ca = ca_bundle()
+            .map(|path| format!("\nopenssl.cafile = {path}\ncurl.cainfo = {path}\n"))
+            .unwrap_or_default(),
     )
+}
+
+/// The system's CA bundle, for PHP's openssl and curl (Bird's static PHP
+/// has no default of its own that fits every system). macOS has one place;
+/// Linux distributions each have their own.
+fn ca_bundle() -> Option<&'static str> {
+    if cfg!(target_os = "macos") {
+        return Some("/etc/ssl/cert.pem");
+    }
+    [
+        "/etc/ssl/certs/ca-certificates.crt", // Debian, Ubuntu, Arch
+        "/etc/pki/tls/certs/ca-bundle.crt",   // Fedora, RHEL
+        "/etc/ssl/ca-bundle.pem",             // openSUSE
+        "/etc/ssl/cert.pem",
+    ]
+    .into_iter()
+    .find(|path| Path::new(path).is_file())
 }
 
 #[cfg(test)]
