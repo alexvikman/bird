@@ -170,17 +170,30 @@ final class BirdModel: ObservableObject {
 
     private var refreshQueued = false
     private var lastStateData: Data?
+    /// The error refresh itself showed (Bird missing, `bird state` failing),
+    /// which a successful refresh clears. Any other error (a failed command:
+    /// perform() refreshes right after setting it) stays until dismissed.
+    private var refreshError: String?
+
+    private func refreshFailed(_ message: String) {
+        error = message
+        refreshError = message
+    }
 
     private func refreshOnce() async {
         guard FileManager.default.isExecutableFile(atPath: bird.path) else {
             state = nil
-            error = "Bird is not installed. Run `bird install` in Terminal."
+            refreshFailed("Bird is not installed. Run `bird install` in Terminal.")
             return
         }
         let result = await Self.run(bird, ["state"])
         guard result.status == 0, let data = result.out.data(using: .utf8) else {
-            error = result.err.isEmpty ? "`bird state` failed" : result.err
+            refreshFailed(result.err.isEmpty ? "`bird state` failed" : result.err)
             return
+        }
+        if let own = refreshError {
+            if error == own { error = nil }
+            refreshError = nil
         }
         // Unchanged: don't publish, which would redraw the menu and icon.
         if data == lastStateData, state != nil { return }
@@ -189,9 +202,8 @@ final class BirdModel: ObservableObject {
             decoder.keyDecodingStrategy = .convertFromSnakeCase
             state = try decoder.decode(BirdState.self, from: data)
             lastStateData = data
-            error = nil
         } catch {
-            self.error = "Unexpected output from `bird state`: \(error.localizedDescription)"
+            refreshFailed("Unexpected output from `bird state`: \(error.localizedDescription)")
         }
     }
 

@@ -537,7 +537,22 @@ fn unlink(name: Option<String>) -> Result<()> {
 fn state(available: bool) -> Result<()> {
     use crate::config::XdebugMode;
     let cfg = Config::load()?;
-    let daemon = control::send(json!({"cmd": "status"})).ok();
+    let mut daemon = control::send(json!({"cmd": "status"})).ok();
+    // Leave out the counters that change every second (the app shows none of
+    // them), so the output only changes when something did.
+    if let Some(d) = daemon.as_mut().and_then(|d| d.as_object_mut()) {
+        d.remove("uptime_secs");
+        for pool in d
+            .get_mut("fpm")
+            .and_then(|f| f.as_array_mut())
+            .into_iter()
+            .flatten()
+            .filter_map(|p| p.as_object_mut())
+        {
+            pool.remove("uptime_secs");
+            pool.remove("idle_secs");
+        }
+    }
     let scheme = |secure: bool| if secure { "https" } else { "http" };
     let installed = php::installed();
     let sites: Vec<serde_json::Value> = sites::all_sites(&cfg)
