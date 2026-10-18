@@ -121,6 +121,14 @@ a published build only counts as current with the same recipe. So adding an
 extension or bumping a pin rebuilds everything the next Monday; a week with no
 new PHP releases builds nothing, asks for no approval and finishes in seconds.
 
+When some builds fail (say Linux, while macOS succeeds), the publish job still
+runs and publishes the builds that succeeded; the run is marked failed and the
+failed builds' logs are kept as `logs-php-*` artifacts. Since nothing of a
+failed build is published, the next Monday builds it again (and asks for
+approval again, even if that is all there is). If every build failed, publish
+stops before touching the release. A cancelled run publishes nothing. A
+dispatch with `publish` behaves the same.
+
 Manual runs can do the same with `only-missing`:
 
 ```bash
