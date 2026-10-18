@@ -1,7 +1,7 @@
 //! PHP versions: naming, resolution per directory, and installation.
 //!
 //! PHP comes from Bird's own builds (php-builds/, published as the `php`
-//! GitHub release with a `manifest.json` carrying sha256 sums). A
+//! GitHub release with a signed `manifest.json` carrying sha256 sums). A
 //! dl.static-php.dev distribution still works as `php_mirror`, without
 //! checksums and with fewer extensions.
 
@@ -203,13 +203,47 @@ struct Asset {
 }
 
 fn fetch_manifest(base: &str) -> Result<Manifest> {
+    let client = http()?;
     let url = format!("{base}/manifest.json");
-    let manifest: Manifest = http()?
+    let body = client
         .get(&url)
         .send()
         .and_then(|r| r.error_for_status())
-        .with_context(|| format!("could not fetch {url}"))?
-        .json()
+        .and_then(|r| r.bytes())
+        .with_context(|| format!("could not fetch {url}"))?;
+    // Bird's own builds count only with a signature from a key compiled into
+    // Bird: the manifest's sha256 sums then vouch for every archive. A custom
+    // mirror is trusted as configured.
+    let signature = if base == DEFAULT_MIRROR {
+        let sig_url = format!("{url}.sig");
+        let sig = client
+            .get(&sig_url)
+            .send()
+            .and_then(|r| r.error_for_status())
+            .and_then(|r| r.text())
+            .with_context(|| {
+                format!("could not fetch {sig_url}; not trusting an unsigned PHP manifest")
+            })?;
+        Some(sig)
+    } else {
+        None
+    };
+    check_manifest(&url, &body, signature.as_deref(), crate::signing::PHP_KEYS)
+}
+
+/// Verifies `signature` (when given) over the raw manifest bytes, then parses
+/// them. Nothing in the manifest is read before the signature checks out.
+fn check_manifest(
+    url: &str,
+    body: &[u8],
+    signature: Option<&str>,
+    keys: &[&str],
+) -> Result<Manifest> {
+    if let Some(signature) = signature {
+        crate::signing::verify(body, signature, crate::signing::PHP_NAMESPACE, keys)
+            .with_context(|| format!("the signature of {url} is not valid; not trusting it"))?;
+    }
+    let manifest: Manifest = serde_json::from_slice(body)
         .with_context(|| format!("{url} is not a valid PHP manifest"))?;
     if manifest.schema != MANIFEST_SCHEMA {
         bail!(
@@ -782,6 +816,74 @@ mod tests {
         }"#).unwrap();
         assert_eq!(m.latest["8.4"]["macos-aarch64"], "8.4.26");
         assert_eq!(m.builds[0].shared_extensions["xdebug"].size, 3);
+    }
+
+    // Test-only key and signatures (`ssh-keygen -Y sign`); not Bird's PHP key.
+    const TEST_PHP_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOqj6KKG7FhsFNuXZ5TgGDRn0zGsEuQErozojaIiLvI/ bird-php-test";
+    const SIGNED_MANIFEST: &[u8] =
+        b"{\"schema\": 1, \"latest\": {\"8.4\": {\"macos-aarch64\": \"8.4.26\"}}, \"builds\": []}\n";
+    // `-n bird-php`
+    const MANIFEST_SIG: &str = "-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg6qPooobsWGwU25dnlOAYNGfTMa
+wS5ASujOiNoiIu8j8AAAAIYmlyZC1waHAAAAAAAAAABnNoYTUxMgAAAFMAAAALc3NoLWVk
+MjU1MTkAAABACdAX7iuSpDyZs65m9KrDWy6YGzNQcBnYSr9BUoSFjkNQ57QB8IjMhMKfti
+7Xdxxqu7hcXhBVCEl9YcyBqx3DCQ==
+-----END SSH SIGNATURE-----
+";
+    // The same file and key, but `-n bird-release`.
+    const RELEASE_NAMESPACE_SIG: &str = "-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg6qPooobsWGwU25dnlOAYNGfTMa
+wS5ASujOiNoiIu8j8AAAAMYmlyZC1yZWxlYXNlAAAAAAAAAAZzaGE1MTIAAABTAAAAC3Nz
+aC1lZDI1NTE5AAAAQLSM45sFiSVH/V2GC4StWGIUARsZgeILBwnJbaVv4xEpL9+fbjt/UT
+Jek2xLuMGjKUUEIcBnDbxJe3uqtkULsQ4=
+-----END SSH SIGNATURE-----
+";
+
+    #[test]
+    fn accepts_a_signed_manifest() {
+        let m = check_manifest("m", SIGNED_MANIFEST, Some(MANIFEST_SIG), &[TEST_PHP_KEY]).unwrap();
+        assert_eq!(m.latest["8.4"]["macos-aarch64"], "8.4.26");
+    }
+
+    #[test]
+    fn rejects_badly_signed_manifests() {
+        let tampered = String::from_utf8_lossy(SIGNED_MANIFEST).replace("8.4.26", "8.4.27");
+        assert!(
+            check_manifest(
+                "m",
+                tampered.as_bytes(),
+                Some(MANIFEST_SIG),
+                &[TEST_PHP_KEY]
+            )
+            .is_err(),
+            "changed manifest"
+        );
+        assert!(
+            check_manifest(
+                "m",
+                SIGNED_MANIFEST,
+                Some(MANIFEST_SIG),
+                crate::signing::PHP_KEYS
+            )
+            .is_err(),
+            "signed with a key Bird does not trust"
+        );
+        assert!(
+            check_manifest(
+                "m",
+                SIGNED_MANIFEST,
+                Some(RELEASE_NAMESPACE_SIG),
+                &[TEST_PHP_KEY]
+            )
+            .is_err(),
+            "a release signature is not a manifest signature"
+        );
+        assert!(check_manifest("m", SIGNED_MANIFEST, Some("garbage"), &[TEST_PHP_KEY]).is_err());
+    }
+
+    #[test]
+    fn custom_mirrors_need_no_signature() {
+        check_manifest("m", SIGNED_MANIFEST, None, &[]).unwrap();
     }
 
     #[test]

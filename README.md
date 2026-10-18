@@ -29,7 +29,7 @@ self-update --check` only looks. From source: `cargo build --release &&
 | Web server | Built-in HTTP/1.1 + HTTP/2 server (hyper + rustls). Static files are served directly, PHP goes to PHP-FPM over FastCGI. No nginx, no config to regenerate. |
 | HTTPS | A local CA (trusted once at install) issues a certificate the first time a hostname is requested. Every site and subdomain works over HTTPS. The CA is name-constrained to the TLD (and no IP addresses), so even a leaked key can't impersonate real domains; `bird tld` replaces it. On Linux it goes into the system trust store and Chrome/Firefox's NSS stores (needs `certutil`). |
 | Ports 80/443 | macOS: launchd binds them as root and hands the sockets to the daemon, which runs as you. Linux: a systemd service runs the daemon as you with only `CAP_NET_BIND_SERVICE`, which it drops right after binding. No privileged helper stays running. |
-| PHP | Bird's own static builds ([php-builds/](php-builds/), made with [static-php-cli](https://static-php.dev)), checked against sha256 sums from the release manifest, in `~/.bird/php/<version>`. One FPM pool per version, started on first request and stopped when idle. |
+| PHP | Bird's own static builds ([php-builds/](php-builds/), made with [static-php-cli](https://static-php.dev)), checked against sha256 sums from the signed release manifest, in `~/.bird/php/<version>`. One FPM pool per version, started on first request and stopped when idle. |
 | CLI | `~/.bird/bin/php`, `php8.4` and `composer` are shims that pick the same PHP version the site is served with. |
 
 PHP version per site, in order: `bird isolate` → `.php-version` in the project → global (`bird use`).
@@ -150,6 +150,18 @@ and a download can be checked by hand with:
 echo "bird-release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAII5iuep2RhMNGoxLgz+sc8qaXQ9as6/ZcDCzVpJPXVyn" > allowed_signers
 ssh-keygen -Y verify -f allowed_signers -I bird-release -n bird-release -s SHA256SUMS.sig < SHA256SUMS
 sha256sum -c --ignore-missing SHA256SUMS   # macOS: shasum -a 256 -c --ignore-missing SHA256SUMS
+```
+
+PHP builds are signed the same way, with a separate key. The PHP workflow
+signs `manifest.json` (`ssh-keygen -Y sign -n bird-php`) in the `php-release`
+environment, which only `main` can use and which needs the owner's approval,
+and Bird refuses the default mirror's manifest unless `manifest.json.sig`
+matches a key in `PHP_KEYS` (`src/signing.rs`). Every archive is then checked
+against the manifest's sha256 sums. See
+[php-builds/README.md](php-builds/README.md#signing). The PHP key is
+
+```text
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOFCBm+uCYPaByT8wvmM5u+Fw9t0f302T2/bJ1FXGsbp bird-php
 ```
 
 ## Development

@@ -1,8 +1,9 @@
-//! Verifies release signatures made with `ssh-keygen -Y sign` (OpenSSH's
-//! SSHSIG format, Ed25519 keys), so `bird self-update` only trusts a
-//! release's SHA256SUMS if it was signed with a key compiled into Bird.
+//! Verifies signatures made with `ssh-keygen -Y sign` (OpenSSH's SSHSIG
+//! format, Ed25519 keys), so Bird only trusts a release's SHA256SUMS
+//! (`bird self-update`) or the PHP builds' manifest.json (`bird php:install`)
+//! if it was signed with a key compiled into Bird.
 //!
-//! The private key lives in a GitHub environment that needs the owner's
+//! The private keys live in GitHub environments that need the owner's
 //! approval; someone who can push to the repository or edit a release can't
 //! produce a valid signature.
 
@@ -18,6 +19,15 @@ pub const NAMESPACE: &str = "bird-release";
 pub const RELEASE_KEYS: &[&str] = &[
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAII5iuep2RhMNGoxLgz+sc8qaXQ9as6/ZcDCzVpJPXVyn bird-release",
 ];
+
+/// Namespace the PHP builds' manifest.json is signed in.
+pub const PHP_NAMESPACE: &str = "bird-php";
+
+/// Public keys whose signatures Bird accepts for the PHP builds' manifest.
+/// A separate key from the release key: it signs in the `php-release`
+/// environment (.github/workflows/php-builds.yml), and can't sign releases.
+pub const PHP_KEYS: &[&str] =
+    &["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOFCBm+uCYPaByT8wvmM5u+Fw9t0f302T2/bJ1FXGsbp bird-php"];
 
 /// Reads an SSH wire-format `string` (u32 length + bytes).
 fn take<'a>(data: &mut &'a [u8]) -> Result<&'a [u8]> {
@@ -64,7 +74,7 @@ fn ed25519_key_from_blob(blob: &[u8]) -> Result<Vec<u8>> {
 /// Checks an armored SSH signature over `message` against `allowed` keys.
 pub fn verify(message: &[u8], armored: &str, namespace: &str, allowed: &[&str]) -> Result<()> {
     if allowed.is_empty() {
-        bail!("this build of Bird has no release signing key, so it can't verify updates");
+        bail!("this build of Bird has no {namespace} signing key, so it can't verify signatures");
     }
     let b64: String = armored
         .lines()
@@ -177,8 +187,20 @@ Nyf76+TkKmEs79iwnRfuvkIV7P5JQJzQ8=
 
     #[test]
     fn release_keys_parse() {
-        for key in RELEASE_KEYS {
+        for key in RELEASE_KEYS.iter().chain(PHP_KEYS) {
             ed25519_key_from_line(key).unwrap();
+        }
+        assert!(!PHP_KEYS.is_empty(), "no PHP manifest key");
+        // The PHP key lives in another environment (`php-release`, main)
+        // than the release key (`release`, v* tags); one key never signs both.
+        for key in PHP_KEYS {
+            let key = ed25519_key_from_line(key).unwrap();
+            assert!(
+                RELEASE_KEYS
+                    .iter()
+                    .all(|r| ed25519_key_from_line(r).unwrap() != key),
+                "a PHP key is also a release key"
+            );
         }
     }
 }
