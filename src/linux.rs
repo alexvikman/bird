@@ -92,11 +92,18 @@ fn resolved_active() -> bool {
 
 /// Where the CA goes in the system trust store, and the command that
 /// rebuilds the store: Debian/Ubuntu, then Fedora/RHEL/Arch.
+/// Named after the user's home folder, taken from Bird's home (BIRD_HOME,
+/// which `bird install` passes through sudo) rather than $HOME, which sudo
+/// resets to /root: the root install and the user's `bird doctor` must agree.
 fn trust_store() -> Option<(PathBuf, &'static str)> {
+    let home = paths()
+        .home
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(user_home);
     let name = format!(
         "bird-{}",
-        user_home()
-            .file_name()
+        home.file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default()
     );
