@@ -243,8 +243,12 @@ pub fn main() -> Result<()> {
             | Command::Uninstall { .. }
             | Command::Migrate { .. }
     );
-    if !migrates_itself {
-        crate::migrate::run_for_cli()?;
+    // A failed migration is reported, not fatal: stop, doctor, state and
+    // self-update (the way to a release that fixes it) must keep working.
+    if !migrates_itself && let Err(e) = crate::migrate::run_for_cli() {
+        ui::warn(format!(
+            "could not migrate ~/.bird: {e:#} (`bird migrate` tries again)"
+        ));
     }
     match cli.command {
         Command::Install { user_only, php } => install::install(user_only, php),

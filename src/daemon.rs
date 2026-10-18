@@ -110,15 +110,21 @@ pub fn run(http_port: Option<u16>, https_port: Option<u16>) -> Result<()> {
 async fn main(http_port: Option<u16>, https_port: Option<u16>) -> Result<()> {
     paths().ensure_dirs()?;
     // A new version may need to migrate ~/.bird before the config is read.
-    let migrations = crate::migrate::run()?;
-    for id in &migrations.applied {
-        tracing::info!("applied migration {id}");
-    }
-    if !migrations.unknown.is_empty() {
-        tracing::warn!(
-            "~/.bird was migrated by a newer Bird ({}); update this one",
-            migrations.unknown.join(", ")
-        );
+    // If that fails, serve anyway: a daemon that exits takes every site down
+    // and launchd/systemd would restart it in a loop.
+    match crate::migrate::run() {
+        Ok(migrations) => {
+            for id in &migrations.applied {
+                tracing::info!("applied migration {id}");
+            }
+            if !migrations.unknown.is_empty() {
+                tracing::warn!(
+                    "~/.bird was migrated by a newer Bird ({}); update this one",
+                    migrations.unknown.join(", ")
+                );
+            }
+        }
+        Err(e) => tracing::warn!("could not migrate ~/.bird: {e:#}"),
     }
     let mut cfg = Config::load()?;
     tls::ensure_ca_exists(&cfg.tld)?;
