@@ -17,7 +17,8 @@
   manifest.py merge [--existing manifest.json] --out manifest.json build.json...
       Merges the per-build files written by build.sh into a manifest. Builds
       already in the existing manifest are kept unless rebuilt (same version
-      and platform), so a partial run never drops published versions.
+      and platform), so a partial run never drops published versions. With
+      no build files it rewrites the existing manifest (to re-sign it).
 """
 
 import argparse
@@ -168,7 +169,7 @@ def main():
     p = sub.add_parser("merge", help="merge build files into manifest.json")
     p.add_argument("--existing", help="manifest to merge into (missing file = start fresh)")
     p.add_argument("--out", required=True)
-    p.add_argument("builds", nargs="+", help="php-<version>-<platform>.json files from build.sh")
+    p.add_argument("builds", nargs="*", help="php-<version>-<platform>.json files from build.sh (none: re-sort the existing manifest)")
     p.set_defaults(func=merge)
 
     args = parser.parse_args()

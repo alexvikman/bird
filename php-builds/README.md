@@ -91,10 +91,12 @@ The workflow publishes to one rolling GitHub Release with the tag `php`
 (marked "not latest", so it never shadows Bird's own releases). Every archive
 has a unique name (the version, platform and the start of its sha256), so
 older builds stay downloadable and a rebuild never replaces a file the live
-manifest points at; `manifest.json` is the only file replaced on a publish:
+manifest points at; `manifest.json` and its signature `manifest.json.sig` are
+the only files replaced on a publish:
 
 ```
 https://github.com/<owner>/<repo>/releases/download/php/manifest.json
+https://github.com/<owner>/<repo>/releases/download/php/manifest.json.sig
 https://github.com/<owner>/<repo>/releases/download/php/php-8.4.26-cli-macos-aarch64.tar.gz
 ```
 
@@ -105,17 +107,19 @@ gh workflow run php-builds.yml -f versions=8.4 -f publish=true
 ```
 
 `publish` defaults to false, so a run without it only builds and keeps the
-archives as workflow artifacts.
+archives as workflow artifacts. Publishing only runs from `main`, and waits
+for the owner's approval of the `php-release` environment (see "Signing").
 
 ### Weekly run
 
-Every Monday at 04:00 UTC the workflow runs on its own and publishes. It only
+Every Monday at 04:00 UTC the workflow runs on its own and publishes (after
+approval, see "Signing"). It only
 builds what the published `manifest.json` lacks: a new PHP patch release, or
 every version when the build files changed. Each build records a **recipe id**
 (`manifest.py recipe`, a hash of `build.sh`, the list files and the pins), and
 a published build only counts as current with the same recipe. So adding an
 extension or bumping a pin rebuilds everything the next Monday; a week with no
-new PHP releases builds nothing and finishes in seconds.
+new PHP releases builds nothing, asks for no approval and finishes in seconds.
 
 Manual runs can do the same with `only-missing`:
 
@@ -125,6 +129,49 @@ gh workflow run php-builds.yml -f only-missing=true -f publish=true
 
 GitHub disables scheduled workflows in public repositories after 60 days
 without activity in the repository; re-enable it in the Actions tab.
+
+### Signing
+
+Bird only trusts `manifest.json` (and through its sha256 sums, every archive)
+with a valid `manifest.json.sig`: an SSH signature
+(`ssh-keygen -Y sign -n bird-php`, Ed25519) from a key in `PHP_KEYS` in
+`src/signing.rs`. It refuses the default mirror's manifest when the signature
+is missing or wrong, before reading anything in it. The PHP key is separate
+from Bird's release key, so it can't sign Bird updates.
+
+The private key is the `BIRD_PHP_SIGNING_KEY` secret of the `php-release`
+environment, which only `main` may use and which requires the owner's
+approval. The publish job:
+
+1. verifies the published `manifest.json` against `manifest.json.sig` before
+   merging new builds into it (anyone who can edit the release could replace
+   it, and its builds are signed again),
+2. signs the merged manifest and checks the signature against `PHP_KEYS`,
+3. uploads the archives, then `manifest.json.sig`, then `manifest.json`.
+
+A dispatch with `publish` that finds nothing to build re-signs the published
+manifest, e.g. after rotating the key:
+
+```bash
+gh workflow run php-builds.yml -f only-missing=true -f publish=true
+```
+
+Introducing signatures (once): the published manifest is unsigned, so the
+publish job stops unless the run also has `-f adopt-unsigned=true`. Check the
+manifest first (its builds and sha256 sums should match a run you trust; the
+job logs the sha256 of the manifest it adopts). A Bird release that requires
+the signature must only ship after a signed manifest is published, or PHP
+installs fail.
+
+Rotating the key: add the new public key to `PHP_KEYS`, release Bird, replace
+the secret, re-sign, and drop the old key in a later release.
+
+A file can be checked by hand with:
+
+```bash
+echo "bird-php ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOFCBm+uCYPaByT8wvmM5u+Fw9t0f302T2/bJ1FXGsbp" > allowed_signers
+ssh-keygen -Y verify -f allowed_signers -I bird-php -n bird-php -s manifest.json.sig < manifest.json
+```
 
 ### Archives
 
@@ -139,9 +186,10 @@ library (`spc dump-license`); Bird installs them to `~/.bird/php/<minor>/license
 
 `<platform>` is `macos-aarch64`, `macos-x86_64`, `linux-aarch64` or
 `linux-x86_64` (as `platform()` in
-`src/php.rs`). Bird's default `php_mirror` is this release; it reads
-`manifest.json` and verifies every archive's size and sha256 before
-extracting it.
+`src/php.rs`). Bird's default `php_mirror` is this release; it verifies
+`manifest.json.sig`, reads `manifest.json` and verifies every archive's size
+and sha256 before extracting it. A custom `php_mirror` with a manifest is
+trusted without a signature.
 
 ## manifest.json
 
@@ -189,7 +237,8 @@ extracting it.
 
 Installing PHP `8.4` on `macos-aarch64`, then, is:
 
-1. Fetch `manifest.json`, check `schema == 1`.
+1. Fetch `manifest.json` and `manifest.json.sig`, verify the signature
+   (namespace `bird-php`) against the PHP key, then check `schema == 1`.
 2. `full = latest["8.4"]["macos-aarch64"]` (missing → not available).
 3. Find the build with `version == full` and that platform.
 4. Download `cli.file` and `fpm.file`, verify `sha256`, and extract `php` /
@@ -198,6 +247,6 @@ Installing PHP `8.4` on `macos-aarch64`, then, is:
 
 ## Not done yet
 
-- Signing/notarization. Bird downloads the archives itself, so they carry no
+- Apple code signing/notarization. Bird downloads the archives itself, so they carry no
   quarantine attribute and Gatekeeper does not check them; the linker's ad-hoc
   signature is enough to run on Apple Silicon.

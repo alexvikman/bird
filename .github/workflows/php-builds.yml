@@ -1,10 +1,16 @@
 # Builds Bird's PHP binaries (php + php-fpm + shared extensions) with
 # static-php-cli and publishes them to the rolling `php` GitHub Release,
-# together with manifest.json. See php-builds/README.md.
+# together with manifest.json and its signature. See php-builds/README.md.
 #
 # Runs on manual dispatch and weekly (Mondays 04:00 UTC). The weekly run only
 # builds what the published manifest.json lacks: new PHP patch releases, and
 # every version again when the build files changed (see `manifest.py recipe`).
+#
+# Bird trusts the builds only through manifest.json.sig, made with the PHP key
+# (`ssh-keygen -Y sign -n bird-php`, PHP_KEYS in src/signing.rs). The key is a
+# secret of the `php-release` environment, which only main can use and which
+# requires the owner's approval: pushing to the repository or editing the
+# release can't produce a manifest Bird accepts.
 #
 # Hardening: never runs on pull requests or other events from forks, the token
 # is read-only except in the publish job, inputs reach shells only through env,
@@ -32,7 +38,11 @@ on:
         type: boolean
         default: false
       publish:
-        description: Upload to the `php` release and update manifest.json
+        description: Upload to the `php` release and update manifest.json (main only; with nothing to build, re-signs the manifest)
+        type: boolean
+        default: false
+      adopt-unsigned:
+        description: Merge into the published manifest.json even though it is unsigned (once, when introducing signatures)
         type: boolean
         default: false
   schedule:
@@ -63,9 +73,14 @@ jobs:
           VERSIONS: ${{ inputs.versions || '8.1,8.2,8.3,8.4,8.5' }}
           PLATFORMS: ${{ inputs.platforms || 'macos-aarch64,macos-x86_64,linux-aarch64,linux-x86_64' }}
           ONLY_MISSING: ${{ github.event_name == 'schedule' || inputs.only-missing }}
+          PUBLISH: ${{ github.event_name == 'schedule' || inputs.publish }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          if [ "$PUBLISH" = "true" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "Publishing only runs from main (the php-release environment); this is $GITHUB_REF."
+            exit 1
+          fi
           skip=()
           if [ "$ONLY_MISSING" = "true" ]; then
             mkdir -p published
@@ -130,9 +145,20 @@ jobs:
 
   publish:
     name: Publish release
-    needs: build
-    if: github.event_name == 'schedule' || inputs.publish
+    needs: [plan, build]
+    # Only from main (the php-release environment allows nothing else). Also
+    # when a dispatch found nothing to build, to re-sign the manifest; a
+    # scheduled run with nothing new publishes nothing.
+    if: >-
+      !cancelled() && github.ref == 'refs/heads/main' &&
+      needs.plan.result == 'success' &&
+      (needs.build.result == 'success' ||
+       (needs.build.result == 'skipped' && github.event_name == 'workflow_dispatch')) &&
+      (github.event_name == 'schedule' || inputs.publish)
     runs-on: ubuntu-latest
+    # The signing key is a secret of this environment, which requires the
+    # owner's approval before the job runs.
+    environment: php-release
     permissions:
       contents: write
     concurrency:
@@ -147,34 +173,82 @@ jobs:
           persist-credentials: false
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.build.result == 'success'
         with:
           pattern: php-*
           path: dist
           merge-multiple: true
 
+      - name: Allowed signers
+        run: |
+          # The keys compiled into Bird: the signature must verify against
+          # them, or Bird would refuse the manifest.
+          awk '/^pub const PHP_KEYS/,/\];$/' src/signing.rs |
+            grep -oE '"ssh-ed25519 [A-Za-z0-9+/=]+[^"]*"' | tr -d '"' |
+            sed 's/^/bird-php /' > "$RUNNER_TEMP/allowed_signers"
+          [ -s "$RUNNER_TEMP/allowed_signers" ] || { echo "src/signing.rs has no PHP_KEYS"; exit 1; }
+          cat "$RUNNER_TEMP/allowed_signers"
+
       - name: Create the release if missing
         run: |
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release create "$RELEASE_TAG" --latest=false --title "PHP builds" \
-              --notes "PHP binaries for Bird, built by .github/workflows/php-builds.yml. See manifest.json."
+              --notes "PHP binaries for Bird, built by .github/workflows/php-builds.yml. See manifest.json (signed: manifest.json.sig)."
           fi
 
       - name: Merge manifest.json
+        env:
+          ADOPT_UNSIGNED: ${{ inputs.adopt-unsigned }}
         run: |
-          mkdir -p previous
+          mkdir -p dist previous
           # Captured first: run steps use pipefail, and `grep -q` exiting early
           # would SIGPIPE gh and fail the step.
           assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
           if grep -qx manifest.json <<<"$assets"; then
             gh release download "$RELEASE_TAG" --pattern manifest.json --dir previous
+            # Its builds are signed again below, so they must be ones we signed
+            # before: anyone who can edit the release can replace this file.
+            if grep -qx manifest.json.sig <<<"$assets"; then
+              gh release download "$RELEASE_TAG" --pattern manifest.json.sig --dir previous
+              ssh-keygen -Y verify -f "$RUNNER_TEMP/allowed_signers" -I bird-php -n bird-php \
+                -s previous/manifest.json.sig < previous/manifest.json
+            elif [ "$ADOPT_UNSIGNED" = "true" ]; then
+              echo "::warning::adopting the unsigned manifest.json (sha256 $(sha256sum previous/manifest.json | cut -d' ' -f1))"
+            else
+              echo "The published manifest.json is unsigned; check it and re-run with adopt-unsigned to sign it."
+              exit 1
+            fi
           fi
+          shopt -s nullglob
           python3 php-builds/manifest.py merge --existing previous/manifest.json --out dist/manifest.json dist/php-*.json
           cat dist/manifest.json
 
+      - name: Sign manifest.json
+        env:
+          SIGNING_KEY: ${{ secrets.BIRD_PHP_SIGNING_KEY }}
+        run: |
+          [ -n "$SIGNING_KEY" ] || { echo "BIRD_PHP_SIGNING_KEY is not set in the php-release environment"; exit 1; }
+          umask 077
+          key="$RUNNER_TEMP/php-key"
+          printf '%s\n' "$SIGNING_KEY" > "$key"
+          rm -f dist/manifest.json.sig # ssh-keygen would ask before overwriting
+          ssh-keygen -Y sign -f "$key" -n bird-php dist/manifest.json
+          rm -f "$key"
+          ssh-keygen -Y verify -f "$RUNNER_TEMP/allowed_signers" -I bird-php -n bird-php \
+            -s dist/manifest.json.sig < dist/manifest.json
+
       - name: Upload assets
         run: |
+          shopt -s nullglob
           # Archives first, so the manifest never points at missing files.
           # Their names carry their sha256 (build.sh), so this never replaces
           # a file the live manifest.json points at.
-          gh release upload "$RELEASE_TAG" dist/*.tar.gz --clobber
+          archives=(dist/*.tar.gz)
+          if [ "${#archives[@]}" -gt 0 ]; then
+            gh release upload "$RELEASE_TAG" "${archives[@]}" --clobber
+          fi
+          # The signature before the manifest it signs. Until manifest.json
+          # follows, Bird refuses the mismatched pair: installs fail for a few
+          # seconds, but never trust a manifest that isn't signed.
+          gh release upload "$RELEASE_TAG" dist/manifest.json.sig --clobber
           gh release upload "$RELEASE_TAG" dist/manifest.json --clobber
