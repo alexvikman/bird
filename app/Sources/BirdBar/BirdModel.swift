@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import Foundation
 import ServiceManagement
 
@@ -114,6 +115,16 @@ final class BirdModel: ObservableObject {
     @Published private(set) var lastUpdateCheck: Date?
     @Published private(set) var updateError: String?
     @Published private(set) var updating = false
+    /// While an update installs: the version, what `bird self-update` has
+    /// written so far, and how it ended if this app is still here to see it.
+    @Published private(set) var updatingTo: String?
+    @Published private(set) var updateLog = ""
+    @Published private(set) var updateOutcome: UpdateOutcome?
+    private var updateLogURL: URL?
+    private var updateLogTimer: Timer?
+    private var progressPanel: NSPanel?
+    /// The version being installed, kept across the restart to say it worked.
+    private static let installingKey = "installingUpdateVersion"
 
     private static let checkOnLaunchKey = "checkForUpdatesOnLaunch"
     private static let lastCheckKey = "lastUpdateCheck"
@@ -137,6 +148,7 @@ final class BirdModel: ObservableObject {
 
     init() {
         lastUpdateCheck = UserDefaults.standard.object(forKey: Self.lastCheckKey) as? Date
+        confirmFinishedUpdate()
         Task {
             await refresh()
             if checkOnLaunch { await checkForUpdates() }
@@ -523,6 +535,7 @@ final class BirdModel: ObservableObject {
     /// would break when this process exits.
     func installUpdate() {
         guard !updating else { return }
+        let version = update?.latest ?? ""
         let home = state.map { URL(fileURLWithPath: $0.birdHome) }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".bird")
         let log = home.appendingPathComponent("log/update.log")
@@ -546,7 +559,8 @@ final class BirdModel: ObservableObject {
             env["BIRD_APP"] = Bundle.main.bundlePath
         }
         process.environment = env
-        // Only reached when this app survives the update (e.g. it failed).
+        // Only reached when this app survives the update (it failed, or this
+        // copy of the app was not replaced).
         process.terminationHandler = { [weak self] finished in
             let status = finished.terminationStatus
             let output = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
@@ -554,9 +568,19 @@ final class BirdModel: ObservableObject {
                 guard let self else { return }
                 self.updating = false
                 self.activity = nil
+                self.updateLogTimer?.invalidate()
+                self.updateLog = output
+                UserDefaults.standard.removeObject(forKey: Self.installingKey)
+                let lines = output.split(separator: "\n").map(String.init)
                 if status != 0 {
-                    let tail = output.split(separator: "\n").suffix(3).joined(separator: "\n")
+                    let tail = lines.suffix(3).joined(separator: "\n")
                     self.updateError = "Update failed: \(tail)"
+                    let errors = lines.filter { $0.hasPrefix("error:") }
+                    self.updateOutcome = .failed(
+                        (errors.isEmpty ? Array(lines.suffix(3)) : errors).joined(separator: "\n"))
+                } else {
+                    self.updateOutcome = .finished(
+                        lines.filter { $0.hasPrefix("! ") }.map { String($0.dropFirst(2)) })
                 }
                 await self.refresh()
                 await self.checkForUpdates()
@@ -567,8 +591,71 @@ final class BirdModel: ObservableObject {
             updating = true
             activity = "Updating Bird…"
             updateError = nil
+            updatingTo = version
+            updateLog = ""
+            updateOutcome = nil
+            updateLogURL = log
+            UserDefaults.standard.set(version, forKey: Self.installingKey)
+            // The log is a few lines; reading it a few times a second while
+            // the update runs is what the progress window shows.
+            updateLogTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, let url = self.updateLogURL else { return }
+                    let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+                    if text != self.updateLog { self.updateLog = text }
+                }
+            }
+            showUpdateProgress()
         } catch {
             updateError = "Could not start the update: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: Update progress window
+
+    private func showUpdateProgress() {
+        let panel = progressPanel ?? {
+            let panel = NSPanel(
+                contentRect: NSRect(x: 0, y: 0, width: 420, height: 240),
+                styleMask: [.titled, .closable],
+                backing: .buffered, defer: false)
+            panel.title = "Software Update"
+            panel.isReleasedWhenClosed = false
+            panel.contentViewController = NSHostingController(
+                rootView: UpdateProgressWindowContent(model: self))
+            return panel
+        }()
+        progressPanel = panel
+        panel.center()
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    func closeUpdateProgress() {
+        progressPanel?.close()
+        updateOutcome = nil
+    }
+
+    func openUpdateLog() {
+        guard let log = updateLogURL else { return }
+        let console = URL(fileURLWithPath: "/System/Applications/Utilities/Console.app")
+        NSWorkspace.shared.open([log], withApplicationAt: console, configuration: NSWorkspace.OpenConfiguration())
+    }
+
+    /// After `bird self-update` restarted the app into the new version: say so,
+    /// so the update doesn't just finish without a word.
+    private func confirmFinishedUpdate() {
+        guard let version = UserDefaults.standard.string(forKey: Self.installingKey) else { return }
+        UserDefaults.standard.removeObject(forKey: Self.installingKey)
+        let running = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        guard running == version else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            let alert = Self.makeAlert(
+                title: "Bird \(version) is installed",
+                text: "Bird and its menu bar app are up to date.",
+                style: .informational)
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
         }
     }
 

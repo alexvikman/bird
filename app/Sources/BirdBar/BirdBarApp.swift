@@ -22,6 +22,15 @@ struct BirdBarApp: App {
                 exit(0)
             }
         }
+        if let i = args.firstIndex(of: "--snapshot-update-progress"), i + 1 < args.count {
+            // The update window while running, after a failure, and done
+            // with a warning, one above the other.
+            let out = URL(fileURLWithPath: args[i + 1])
+            Task { @MainActor in
+                await Snapshot.updateProgress(to: out)
+                exit(0)
+            }
+        }
         if let i = args.firstIndex(of: "--snapshot-window"), i + 2 < args.count {
             let pane = Pane(rawValue: args[i + 1]) ?? .sites
             let out = URL(fileURLWithPath: args[i + 2])
@@ -151,6 +160,35 @@ enum Snapshot {
         guard let view = alert.window.contentView,
               let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
         view.cacheDisplay(in: view.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])?.write(to: url)
+    }
+
+    static func updateProgress(to url: URL) async {
+        let running = "✓ release signature verified\n  ↓ bird 0.4.11 (3.5 MB)\n"
+        let failed = running + "error: could not download Bird.app: connection reset\n"
+        let done = running + "✓ bird 0.4.10 → 0.4.11\n  ↓ Bird.app (1.6 MB)\n"
+            + "! could not update Bird.app: permission denied\n"
+        let view = VStack(spacing: 0) {
+            UpdateProgressView(version: "0.4.11", log: running, outcome: nil)
+            Divider()
+            UpdateProgressView(
+                version: "0.4.11", log: failed,
+                outcome: .failed("error: could not download Bird.app: connection reset"))
+            Divider()
+            UpdateProgressView(
+                version: "0.4.11", log: done,
+                outcome: .finished(["could not update Bird.app: permission denied"]))
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        let host = NSHostingView(rootView: view)
+        host.frame.size = host.fittingSize
+        let window = NSWindow(
+            contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
+        host.cacheDisplay(in: host.bounds, to: rep)
         try? rep.representation(using: .png, properties: [:])?.write(to: url)
     }
 
