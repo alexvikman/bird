@@ -582,7 +582,7 @@ struct PhpPane: View {
                 HStack(spacing: 8) {
                     if let installed = row.installed {
                         if let update = model.updates[row.minor] {
-                            Button("Update to \(update)") {
+                            Button(update == installed.version ? "Update Build" : "Update to \(update)") {
                                 model.perform(
                                     ["php:update", row.minor], activity: "Updating PHP \(row.minor)…",
                                     then: { await model.loadAvailable() })
@@ -666,13 +666,19 @@ struct PhpStatus: View {
             HStack(spacing: 5) {
                 Image(systemName: update == nil ? "checkmark.circle.fill" : "arrow.down.circle.fill")
                     .foregroundStyle(update == nil ? Color.green : Color.orange)
+                // The installed version first; then what an update brings: a newer
+                // version, or a new build of the same one (other extensions or
+                // fixes in Bird's build).
                 Text(installed.version)
                 if installed.source != "bird" {
                     Text("(\(installed.source))").foregroundStyle(.secondary)
                         .help("Installed from \(installed.source); updating installs Bird's build")
                 }
-                if update != nil {
-                    Text("update available").foregroundStyle(.orange).font(.caption)
+                if let update, update != installed.version {
+                    Text("→ \(update) available").foregroundStyle(.orange).font(.caption)
+                } else if update != nil {
+                    Text("· new build available").foregroundStyle(.orange).font(.caption)
+                        .help("Bird has rebuilt PHP \(installed.version), e.g. with fixes or other extensions")
                 }
             }
         } else {
