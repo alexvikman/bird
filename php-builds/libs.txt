@@ -3,3 +3,5 @@
 freetype
 libjpeg
 libwebp
+# curl: HTTP/2 (spc builds libcurl with USE_NGHTTP2 when nghttp2 is linked).
+nghttp2

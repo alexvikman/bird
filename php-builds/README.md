@@ -9,7 +9,7 @@ load Xdebug.
 | --- | --- |
 | `extensions.txt` | Extensions compiled into `php` and `php-fpm` |
 | `shared-extensions.txt` | Extensions built as loadable `.so` files (Xdebug, PCOV) |
-| `libs.txt` | Extra libraries (gd: FreeType, JPEG, WebP) |
+| `libs.txt` | Extra libraries (gd: FreeType, JPEG, WebP; curl: HTTP/2 via nghttp2) |
 | `sources.txt` | Pinned PECL sources with sha256 (otherwise spc takes the newest, even alphas) |
 | `build.sh` | Builds, tests and packages one PHP version on the current Mac |
 | `libde265-sse-only.php` | spc patch for linux-x86_64: libde265 without AVX kernels (see "Xdebug") |

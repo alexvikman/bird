@@ -263,6 +263,9 @@ check_exts() { # <binary> <exts...>
 }
 # shellcheck disable=SC2046
 check_exts "$php" $(read_list "$here/extensions.txt") || die "php is missing extensions"
+# libcurl only speaks HTTP/2 when it was built with nghttp2 (libs.txt).
+"$php" -n -r 'exit(curl_version()["features"] & CURL_VERSION_HTTP2 ? 0 : 1);' ||
+    die "php's curl has no HTTP/2 support"
 # php-fpm has no -r; compare its module list instead.
 fpm_modules="$("$fpm" -n -m | tr '[:upper:]' '[:lower:]')"
 for ext in $(read_list "$here/extensions.txt"); do
