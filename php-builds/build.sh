@@ -227,6 +227,17 @@ for line in open(sources_txt):
 PY
 
 log "Building"
+# PHP 8.4.27 and 8.5.12 ship a stray ext/imap/tests/ (imap moved to PECL in
+# 8.4), and spc only extracts PECL imap into php-src/ext/imap when that
+# directory is missing. Extract php-src first and drop the leftover; PHP 8.3's
+# own ext/imap has a config.m4 and stays.
+if [[ ",$static_exts," == *,imap,* ]]; then
+    "$spc" extract php-src ${spc_flags[@]+"${spc_flags[@]}"}
+    stray="$build_dir/source/php-src/ext/imap"
+    if [ -d "$stray" ] && [ ! -e "$stray/config.m4" ]; then
+        rm -rf "$stray"
+    fi
+fi
 build_flags=(--build-cli --build-fpm --with-libs="$libs")
 [ -n "$shared_exts" ] && build_flags+=(--build-shared="$shared_exts")
 # zig's compiler-rt lacks the x86 CPU detection libde265's AVX kernels need.
