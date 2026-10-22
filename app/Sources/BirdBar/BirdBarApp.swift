@@ -55,6 +55,9 @@ struct BirdBarApp: App {
             MainWindow(model: model)
         }
         .defaultSize(width: 940, height: 600)
+        // The same toolbar on every pane, also those without buttons (which
+        // otherwise get a plain title bar with the title centered).
+        .windowToolbarStyle(.unified(showsTitle: true))
     }
 }
 

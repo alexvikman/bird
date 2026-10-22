@@ -1,114 +1,6 @@
 import AppKit
 import SwiftUI
 
-enum Pane: String, CaseIterable, Identifiable {
-    case sites, proxies, folders, php, settings, about
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .sites: "Sites"
-        case .proxies: "Proxies"
-        case .folders: "Folders"
-        case .php: "PHP"
-        case .settings: "Settings"
-        case .about: "About"
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .sites: "globe"
-        case .proxies: "arrow.left.arrow.right"
-        case .folders: "folder.fill"
-        case .php: "chevron.left.forwardslash.chevron.right"
-        case .settings: "gearshape.fill"
-        case .about: "info"
-        }
-    }
-
-    var color: Color {
-        switch self {
-        case .sites: .blue
-        case .proxies: .indigo
-        case .folders: .cyan
-        case .php: Color(red: 0.47, green: 0.48, blue: 0.70)  // PHP's own purple
-        case .settings: .gray
-        case .about: .gray
-        }
-    }
-}
-
-/// A white symbol on a colored rounded square, like System Settings; About
-/// shows the app icon. 22 points in the sidebar, larger in a pane's header.
-struct PaneIcon: View {
-    let pane: Pane
-    var size: CGFloat = 22
-
-    var body: some View {
-        if pane == .about {
-            // The icon has transparent margins (the macOS icon grid); crop
-            // them so it lines up with the squares.
-            Image(nsImage: NSApp.applicationIconImage)
-                .resizable()
-                .frame(width: size * 27 / 22, height: size * 27 / 22)
-                .frame(width: size, height: size)
-        } else {
-            Image(systemName: pane.icon)
-                .font(.system(size: size / 2, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: size, height: size)
-                .background(
-                    RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
-                        .fill(pane.color.gradient))
-        }
-    }
-}
-
-/// The top of a pane: its icon, name and what it is for (as on About).
-struct PaneHeader: View {
-    let pane: Pane
-    let text: String
-
-    var body: some View {
-        VStack(spacing: 6) {
-            PaneIcon(pane: pane, size: 52)
-                .padding(.bottom, 4)
-            Text(pane.title).font(.title2.weight(.semibold))
-            Text(text)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 460)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 10)
-    }
-}
-
-/// A table pane: the header in a box like a grouped Form section (as on the
-/// PHP and Settings panes), and the table below it in a bordered box.
-struct TablePane<Content: View>: View {
-    let pane: Pane
-    let text: String
-    @ViewBuilder let content: Content
-
-    var body: some View {
-        VStack(spacing: 14) {
-            PaneHeader(pane: pane, text: text)
-                .padding(.horizontal, 10)
-                .background {
-                    let box = RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    box.fill(Color.primary.opacity(0.025))
-                    box.strokeBorder(Color.primary.opacity(0.08))
-                }
-            content
-                .tableStyle(.bordered(alternatesRowBackgrounds: true))
-        }
-        .padding(20)
-    }
-}
-
 /// The main window: manage sites, proxies, parked folders, PHP versions and
 /// settings. While it is open Bird behaves like a regular app (Dock icon,
 /// ⌘Tab); closing it returns to menu bar only.
@@ -129,6 +21,7 @@ struct MainWindow: View {
                 .padding(.vertical, 3)
                 .tag(pane)
             }
+            .withoutSidebarToggle()
             .navigationSplitViewColumnWidth(min: 160, ideal: 180)
             .safeAreaInset(edge: .bottom) {
                 HStack(spacing: 6) {
@@ -172,17 +65,23 @@ struct MainWindow: View {
                     .background(Color.red.opacity(0.08))
                 }
             }
-            // White behind the content (like System Settings), not the window's grey.
-            .background(Color(nsColor: .textBackgroundColor))
+            // White behind the content (like System Settings), not the window's
+            // grey, also under the toolbar so the two meet without a seam.
+            .background(Color(nsColor: .textBackgroundColor).ignoresSafeArea())
+            // No toolbar material of its own (it is grey while the window has
+            // focus): the white shows through, and the sidebar runs to the top.
+            .toolbarBackground(.hidden, for: .windowToolbar)
             .toolbar {
-                ToolbarItem(placement: .status) {
-                    if let activity = model.activity {
+                // Only while something runs: an empty status item still
+                // takes the middle of the toolbar, where the window is dragged.
+                if model.activity != nil || model.busy {
+                    ToolbarItem(placement: .status) {
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.small)
-                            Text(activity).font(.callout).foregroundStyle(.secondary)
+                            if let activity = model.activity {
+                                Text(activity).font(.callout).foregroundStyle(.secondary)
+                            }
                         }
-                    } else if model.busy {
-                        ProgressView().controlSize(.small)
                     }
                 }
             }
@@ -222,7 +121,18 @@ struct SitesPane: View {
     }
 
     var body: some View {
-        TablePane(pane: .sites, text: "Every project Bird serves, linked or in a parked folder. HTTPS always works; the switch also redirects HTTP to HTTPS.") {
+        PaneScaffold(
+            pane: .sites, tld: state.tld, layout: .table,
+            subtitle: "\(state.sites.count) sites · .\(state.tld)",
+            actions: [
+                PaneAction(
+                    title: "Link Folder…", icon: "link.badge.plus",
+                    help: "Serve a project folder as <name>.\(state.tld)", run: linkFolder),
+                PaneAction(
+                    title: "Refresh", icon: "arrow.clockwise", help: "Reload the list of sites",
+                    run: { Task { await model.refresh() } }),
+            ]
+        ) {
             Table(rows, selection: $ui.selection, sortOrder: $ui.sortOrder) {
                 TableColumn("Site", value: \.domain) { site in
                     VStack(alignment: .leading, spacing: 1) {
@@ -284,25 +194,6 @@ struct SitesPane: View {
                 ids.compactMap { site($0) }.forEach { model.open($0.url) }
             }
             .searchable(text: $ui.query, placement: .toolbar, prompt: "Filter sites")
-            .navigationTitle("Sites")
-            .navigationSubtitle("\(state.sites.count) sites · .\(state.tld)")
-            .toolbar {
-                ToolbarItem {
-                    Button {
-                        linkFolder()
-                    } label: {
-                        Label("Link Folder…", systemImage: "link.badge.plus")
-                    }
-                    .help("Serve a project folder as <name>.\(state.tld)")
-                }
-                ToolbarItem {
-                    Button {
-                        Task { await model.refresh() }
-                    } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
-                    }
-                }
-            }
             .confirmationDialog(
                 "Unlink \(ui.unlinkCandidate?.domain ?? "")?",
                 isPresented: Binding(
@@ -426,7 +317,14 @@ struct ProxiesPane: View {
     @StateObject private var ui = ProxiesUI()
 
     var body: some View {
-        TablePane(pane: .proxies, text: "Serve a .\(state.tld) domain from another server, such as Vite or Docker, with HTTPS and WebSockets.") {
+        PaneScaffold(
+            pane: .proxies, tld: state.tld, layout: .table,
+            actions: [
+                PaneAction(
+                    title: "Add Proxy…", icon: "plus",
+                    help: "Serve a .\(state.tld) domain from another server", run: { ui.adding = true }),
+            ]
+        ) {
             Table(state.proxies) {
                 TableColumn("Domain") { proxy in
                     Button(proxy.domain) { model.open(proxy.url) }
@@ -453,16 +351,6 @@ struct ProxiesPane: View {
                     .help("Remove \(proxy.domain)")
                 }
                 .width(30)
-            }
-            .navigationTitle("Proxies")
-            .toolbar {
-                ToolbarItem {
-                    Button {
-                        ui.adding = true
-                    } label: {
-                        Label("Add Proxy…", systemImage: "plus")
-                    }
-                }
             }
             .overlay {
                 if state.proxies.isEmpty {
@@ -511,7 +399,14 @@ struct FoldersPane: View {
     let state: BirdState
 
     var body: some View {
-        TablePane(pane: .folders, text: "Every folder inside a parked folder is served as <folder>.\(state.tld). Nothing in them is changed.") {
+        PaneScaffold(
+            pane: .folders, tld: state.tld, layout: .table,
+            actions: [
+                PaneAction(
+                    title: "Park Folder…", icon: "plus",
+                    help: "Serve every project in a folder as <project>.\(state.tld)", run: park),
+            ]
+        ) {
             Table(state.paths.map(ParkedFolder.init)) {
                 TableColumn("Folder") { folder in
                     Text(abbreviate(folder.path))
@@ -530,16 +425,6 @@ struct FoldersPane: View {
                     .buttonStyle(.borderless)
                 }
                 .width(110)
-            }
-            .navigationTitle("Folders")
-            .toolbar {
-                ToolbarItem {
-                    Button {
-                        park()
-                    } label: {
-                        Label("Park Folder…", systemImage: "plus")
-                    }
-                }
             }
             .overlay {
                 if state.paths.isEmpty {
@@ -588,6 +473,7 @@ struct PhpRow: Identifiable {
 
 final class PhpUI: ObservableObject {
     @Published var removeCandidate: String?
+    @Published var showUploadPerVersion = false
     @Published var showMemoryPerVersion = false
 }
 
@@ -609,48 +495,35 @@ struct PhpPane: View {
             }
     }
 
+    private var actions: [PaneAction] {
+        var actions: [PaneAction] = []
+        if !model.updates.isEmpty {
+            actions.append(PaneAction(
+                title: "Update All", icon: "arrow.down.circle",
+                help: "Install every PHP update listed below", disabled: model.activity != nil
+            ) {
+                model.perform(["php:update"], activity: "Updating PHP…", then: { await model.loadAvailable() })
+            })
+        }
+        actions.append(PaneAction(
+            title: "Check for Updates", icon: "arrow.clockwise",
+            help: "Check for new PHP versions and builds"
+        ) {
+            Task { await model.loadAvailable() }
+        })
+        return actions
+    }
+
     var body: some View {
-        Form {
-            Section {
-                PaneHeader(
-                    pane: .php,
-                    text: "Install, update and switch between PHP versions, and set the limits PHP runs with.")
-            }
-            Section("Versions") {
-                ForEach(rows) { row in
+        PaneScaffold(pane: .php, tld: state.tld, actions: actions) {
+            Card(title: "Versions") {
+                ForEach(Array(rows.enumerated()), id: \.element.id) { i, row in
+                    if i > 0 { CardDivider() }
                     PhpVersionRow(model: model, state: state, ui: ui, row: row)
                 }
             }
-            Section {
+            Card(footer: "Empty fields use the value in each version's php.ini.") {
                 PhpLimits(model: model, state: state, ui: ui)
-            } footer: {
-                Text("Empty fields use the value in each version's php.ini.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
-        .navigationTitle("PHP")
-        .toolbar {
-            ToolbarItem {
-                if !model.updates.isEmpty {
-                    Button {
-                        model.perform(
-                            ["php:update"], activity: "Updating PHP…",
-                            then: { await model.loadAvailable() })
-                    } label: {
-                        Label("Update All", systemImage: "arrow.down.circle")
-                    }
-                    .disabled(model.activity != nil)
-                }
-            }
-            ToolbarItem {
-                Button {
-                    Task { await model.loadAvailable() }
-                } label: {
-                    Label("Check for Updates", systemImage: "arrow.clockwise")
-                }
             }
         }
         .task { await model.loadAvailable() }
@@ -728,7 +601,7 @@ struct PhpVersionRow: View {
             .controlSize(.small)
             .disabled(model.activity != nil)
         }
-        .padding(.vertical, 2)
+        .cardRow()
     }
 }
 
@@ -761,7 +634,7 @@ struct PhpStatus: View {
 }
 
 /// Upload size and memory limit (`bird php:limits`), like Herd's: one value
-/// for all versions, and the memory limit per version under a disclosure.
+/// for all versions, and under a disclosure one per version.
 struct PhpLimits: View {
     @ObservedObject var model: BirdModel
     let state: BirdState
@@ -773,28 +646,42 @@ struct PhpLimits: View {
     }
 
     var body: some View {
-        LimitRow(
+        LimitGroup(
             title: "Max File Upload Size",
             caption: "The largest file PHP accepts as an upload, in MB. Form posts may be as large.",
+            expanded: $ui.showUploadPerVersion,
             value: state.phpUploadMb,
             placeholder: global?.uploadMb,
-            set: { set("--upload", $0) })
-        DisclosureGroup(isExpanded: $ui.showMemoryPerVersion) {
+            set: { set("--upload", $0) }
+        ) {
             ForEach(state.phpVersions.reversed()) { v in
+                CardDivider()
                 LimitRow(
-                    title: v.minor,
-                    caption: nil,
-                    value: v.memoryMbOverride,
-                    placeholder: state.phpMemoryMb ?? v.memoryMb,
-                    set: { set("--memory", $0, php: v.minor) })
+                    title: v.minor, caption: nil, value: v.uploadMbOverride,
+                    placeholder: state.phpUploadMb ?? v.uploadMb,
+                    set: { set("--upload", $0, php: v.minor) }
+                )
+                .padding(.leading, 26)
             }
-        } label: {
-            LimitRow(
-                title: "Memory Limit",
-                caption: "The most memory a PHP script may use, in MB; -1 for no limit. Open to set it per version.",
-                value: state.phpMemoryMb,
-                placeholder: global?.memoryMb,
-                set: { set("--memory", $0) })
+        }
+        CardDivider()
+        LimitGroup(
+            title: "Memory Limit",
+            caption: "The most memory a PHP script may use, in MB; -1 for no limit.",
+            expanded: $ui.showMemoryPerVersion,
+            value: state.phpMemoryMb,
+            placeholder: global?.memoryMb,
+            set: { set("--memory", $0) }
+        ) {
+            ForEach(state.phpVersions.reversed()) { v in
+                CardDivider()
+                LimitRow(
+                    title: v.minor, caption: nil, value: v.memoryMbOverride,
+                    placeholder: state.phpMemoryMb ?? v.memoryMb,
+                    set: { set("--memory", $0, php: v.minor) }
+                )
+                .padding(.leading, 26)
+            }
         }
     }
 
@@ -802,6 +689,39 @@ struct PhpLimits: View {
         var args = ["php:limits", flag, mb.map(String.init) ?? "default"]
         if let php { args += ["--php", php] }
         model.perform(args)
+    }
+}
+
+/// A setting for all PHP versions that opens (the chevron) to one per version.
+struct LimitGroup<PerVersion: View>: View {
+    let title: String
+    let caption: String
+    @Binding var expanded: Bool
+    let value: Int?
+    let placeholder: Int?
+    let set: (Int?) -> Void
+    @ViewBuilder let perVersion: PerVersion
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 4) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+                    .frame(width: 16, height: 16)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(expanded ? "Hide the versions" : "Set it per PHP version")
+            LimitRow(title: title, caption: caption, value: value, placeholder: placeholder, set: set)
+        }
+        .padding(.leading, 6)
+        if expanded {
+            perVersion
+        }
     }
 }
 
@@ -815,17 +735,7 @@ struct LimitRow: View {
     let set: (Int?) -> Void
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                if let caption {
-                    Text(caption)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            Spacer()
+        SettingRow(title: title, caption: caption) {
             TextField(
                 title,
                 value: Binding(get: { value }, set: { if $0 != value { set($0) } }),
@@ -862,14 +772,16 @@ struct UpdatesSection: View {
             Button("Check for Updates…") { model.checkForUpdatesInteractively() }
                 .disabled(model.checkingForUpdate || model.updating)
         }
+        .cardRow()
         if let error = model.updateError {
-            ErrorText(error: error)
+            CardDivider()
+            ErrorText(error: error).cardRow()
         }
-        Toggle("Check for updates automatically", isOn: Binding(
-            get: { model.checkOnLaunch },
-            set: { model.checkOnLaunch = $0 }
-        ))
-        .help("At launch and once a day. Only checks and tells you; updates are never installed without a click.")
+        CardDivider()
+        ToggleRow(
+            title: "Check for updates automatically",
+            help: "At launch and once a day. Only checks and tells you; updates are never installed without a click.",
+            isOn: Binding(get: { model.checkOnLaunch }, set: { model.checkOnLaunch = $0 }))
     }
 
     @ViewBuilder
@@ -914,46 +826,32 @@ struct AboutPane: View {
     static let repository = "https://github.com/alexvikman/bird"
 
     var body: some View {
-        Form {
-            Section {
-                VStack(spacing: 4) {
-                    Image(nsImage: NSApp.applicationIconImage)
-                        .resizable()
-                        .frame(width: 96, height: 96)
-                    Text("Bird").font(.title2.weight(.semibold))
-                    Text(version).foregroundStyle(.secondary).textSelection(.enabled)
-                    if let built = Self.buildDate {
-                        Text("Built \(built.formatted(date: .abbreviated, time: .shortened))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Text("Local PHP sites on .\(state.tld), and nothing more.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 2)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
-            }
-            Section("Updates") {
-                UpdatesSection(model: model, state: state)
-            }
-            Section("Links") {
-                link("GitHub", icon: "chevron.left.forwardslash.chevron.right", Self.repository)
-                link("Release Notes", icon: "doc.text", "\(Self.repository)/releases")
-                link("Report an Issue", icon: "exclamationmark.bubble", "\(Self.repository)/issues")
-                link("License", icon: "checkmark.seal", "\(Self.repository)/blob/main/LICENSE")
-            }
-            Section {
-                Text("© 2026 Alexander Vikman. MIT License.")
+        PaneScaffold(pane: .about, tld: state.tld) {
+            Text(version).foregroundStyle(.secondary).textSelection(.enabled)
+                .padding(.top, 2)
+            if let built = Self.buildDate {
+                Text("Built \(built.formatted(date: .abbreviated, time: .shortened))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity)
             }
+        } content: {
+            Card(title: "Updates") {
+                UpdatesSection(model: model, state: state)
+            }
+            Card(title: "Links") {
+                link("GitHub", icon: "chevron.left.forwardslash.chevron.right", Self.repository)
+                CardDivider()
+                link("Release Notes", icon: "doc.text", "\(Self.repository)/releases")
+                CardDivider()
+                link("Report an Issue", icon: "exclamationmark.bubble", "\(Self.repository)/issues")
+                CardDivider()
+                link("License", icon: "checkmark.seal", "\(Self.repository)/blob/main/LICENSE")
+            }
+            Text("© 2026 Alexander Vikman. MIT License.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
         }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
-        .navigationTitle("About")
     }
 
     /// "Version 0.4.6"; the app's own version too if it differs from bird's.
@@ -985,6 +883,7 @@ struct AboutPane: View {
                 Spacer()
                 Image(systemName: "arrow.up.right").foregroundStyle(.secondary)
             }
+            .cardRow()
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -998,48 +897,78 @@ struct SettingsPane: View {
     let state: BirdState
 
     var body: some View {
-        Form {
-            Section {
-                PaneHeader(
-                    pane: .settings,
-                    text: "The global PHP version, Opcache and Xdebug, where Bird keeps its files, and a check that everything works.")
+        PaneScaffold(pane: .settings, tld: state.tld) {
+            Card(title: "PHP") {
+                SettingRow(title: "Global PHP version") {
+                    Picker("Global PHP version", selection: Binding(
+                        get: { state.php ?? "" },
+                        set: { model.perform("use", $0) }
+                    )) {
+                        ForEach(state.phpVersions) { v in
+                            Text("PHP \(v.version)").tag(v.minor)
+                        }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                }
+                CardDivider()
+                ToggleRow(
+                    title: "Opcache",
+                    caption: "Caches compiled PHP; files are still checked for changes on every request.",
+                    isOn: Binding(
+                        get: { state.opcache },
+                        set: { model.perform("opcache", $0 ? "on" : "off") }))
+                CardDivider()
+                SettingRow(title: "Xdebug", caption: "On trigger: only requests from the Xdebug browser extension (or ?XDEBUG_SESSION=1).") {
+                    Picker("Xdebug", selection: Binding(
+                        get: { state.xdebug },
+                        set: { model.perform("xdebug", $0) }
+                    )) {
+                        Text("Off").tag("off")
+                        Text("On trigger").tag("auto")
+                        Text("Always").tag("on")
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .fixedSize()
+                }
             }
-            Section("PHP") {
-                QuickSettings(model: model, state: state)
-            }
-            Section("Bird") {
-                LabeledContent("Status", value: statusLine(state))
-                LabeledContent("Domains", value: "*.\(state.tld)")
-                LabeledContent("Home") {
+            Card(title: "Bird") {
+                SettingRow(title: "Status") {
+                    Text(statusLine(state)).foregroundStyle(.secondary)
+                }
+                CardDivider()
+                SettingRow(title: "Domains") {
+                    Text("*.\(state.tld)").foregroundStyle(.secondary)
+                }
+                CardDivider()
+                SettingRow(title: "Home") {
                     Button(abbreviate(state.birdHome)) { model.reveal(state.birdHome) }
                         .buttonStyle(.link)
                 }
-                LabeledContent("Log") {
+                CardDivider()
+                SettingRow(title: "Log") {
                     Button("Open in Console") { model.openLog() }
                         .buttonStyle(.link)
                 }
-                Toggle("Open menu bar app at login", isOn: Binding(
-                    get: { model.launchAtLogin },
-                    set: { model.launchAtLogin = $0 }
-                ))
+                CardDivider()
+                ToggleRow(
+                    title: "Open menu bar app at login",
+                    isOn: Binding(get: { model.launchAtLogin }, set: { model.launchAtLogin = $0 }))
             }
-            Section("Doctor") {
-                HStack {
-                    Text("Checks PATH, DNS, ports, the certificate authority and PHP.")
-                        .foregroundStyle(.secondary)
-                    Spacer()
+            Card(title: "Doctor") {
+                SettingRow(title: "Checks PATH, DNS, ports, the certificate authority and PHP.") {
                     Button("Run Doctor") { model.runDoctor() }
                 }
                 if let output = model.doctorOutput {
+                    CardDivider()
                     Text(output)
                         .font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .cardRow()
                 }
             }
         }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
-        .navigationTitle("Settings")
     }
+
 }

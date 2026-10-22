@@ -60,8 +60,9 @@ struct PhpVersion: Decodable, Identifiable {
     /// What it runs with (Bird's setting, else php.ini), in MB; -1 is no limit.
     let memoryMb: Int?
     let uploadMb: Int?
-    /// Memory limit set for this version alone.
+    /// Limits set for this version alone.
     let memoryMbOverride: Int?
+    let uploadMbOverride: Int?
     /// Newer (or rebuilt) version on the mirror; only with `--available`.
     let update: String?
 }

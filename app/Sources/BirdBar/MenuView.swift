@@ -130,36 +130,6 @@ func statusLine(_ state: BirdState?) -> String {
 }
 
 /// Global PHP version, opcache and Xdebug for the settings pane.
-struct QuickSettings: View {
-    @ObservedObject var model: BirdModel
-    let state: BirdState
-
-    var body: some View {
-        Picker("PHP", selection: Binding(
-            get: { state.php ?? "" },
-            set: { model.perform("use", $0) }
-        )) {
-            ForEach(state.phpVersions) { v in
-                Text("PHP \(v.version)").tag(v.minor)
-            }
-        }
-        Toggle("Opcache", isOn: Binding(
-            get: { state.opcache },
-            set: { model.perform("opcache", $0 ? "on" : "off") }
-        ))
-        Picker("Xdebug", selection: Binding(
-            get: { state.xdebug },
-            set: { model.perform("xdebug", $0) }
-        )) {
-            Text("Off").tag("off")
-            Text("On trigger").tag("auto")
-            Text("Always").tag("on")
-        }
-        .pickerStyle(.segmented)
-        .help("On trigger: only requests from the Xdebug browser extension (or ?XDEBUG_SESSION=1) run with Xdebug.")
-    }
-}
-
 struct ErrorText: View {
     let error: String
 
