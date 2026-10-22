@@ -16,6 +16,9 @@ struct BirdState: Decodable {
     let opcache: Bool
     let xdebug: String
     let phpVersions: [PhpVersion]
+    /// `bird php:limits`, in MB; nil leaves them to php.ini.
+    let phpMemoryMb: Int?
+    let phpUploadMb: Int?
     /// Only with `bird state --available`.
     let phpAvailable: [AvailablePhp]?
     let phpAvailableError: String?
@@ -54,6 +57,11 @@ struct PhpVersion: Decodable, Identifiable {
     let version: String
     let source: String
     let xdebug: Bool
+    /// What it runs with (Bird's setting, else php.ini), in MB; -1 is no limit.
+    let memoryMb: Int?
+    let uploadMb: Int?
+    /// Memory limit set for this version alone.
+    let memoryMbOverride: Int?
     /// Newer (or rebuilt) version on the mirror; only with `--available`.
     let update: String?
 }

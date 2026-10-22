@@ -40,9 +40,10 @@ enum Pane: String, CaseIterable, Identifiable {
 }
 
 /// A white symbol on a colored rounded square, like System Settings; About
-/// shows the app icon.
+/// shows the app icon. 22 points in the sidebar, larger in a pane's header.
 struct PaneIcon: View {
     let pane: Pane
+    var size: CGFloat = 22
 
     var body: some View {
         if pane == .about {
@@ -50,16 +51,61 @@ struct PaneIcon: View {
             // them so it lines up with the squares.
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
-                .frame(width: 27, height: 27)
-                .frame(width: 22, height: 22)
+                .frame(width: size * 27 / 22, height: size * 27 / 22)
+                .frame(width: size, height: size)
         } else {
             Image(systemName: pane.icon)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: size / 2, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: 22, height: 22)
+                .frame(width: size, height: size)
                 .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous).fill(pane.color.gradient))
+                    RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
+                        .fill(pane.color.gradient))
         }
+    }
+}
+
+/// The top of a pane: its icon, name and what it is for (as on About).
+struct PaneHeader: View {
+    let pane: Pane
+    let text: String
+
+    var body: some View {
+        VStack(spacing: 6) {
+            PaneIcon(pane: pane, size: 52)
+                .padding(.bottom, 4)
+            Text(pane.title).font(.title2.weight(.semibold))
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 460)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 10)
+    }
+}
+
+/// A table pane: the header in a box like a grouped Form section (as on the
+/// PHP and Settings panes), and the table below it in a bordered box.
+struct TablePane<Content: View>: View {
+    let pane: Pane
+    let text: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(spacing: 14) {
+            PaneHeader(pane: pane, text: text)
+                .padding(.horizontal, 10)
+                .background {
+                    let box = RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    box.fill(Color.primary.opacity(0.025))
+                    box.strokeBorder(Color.primary.opacity(0.08))
+                }
+            content
+                .tableStyle(.bordered(alternatesRowBackgrounds: true))
+        }
+        .padding(20)
     }
 }
 
@@ -176,105 +222,107 @@ struct SitesPane: View {
     }
 
     var body: some View {
-        Table(rows, selection: $ui.selection, sortOrder: $ui.sortOrder) {
-            TableColumn("Site", value: \.domain) { site in
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(site.domain).fontWeight(.medium)
-                    Text(abbreviate(site.path))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+        TablePane(pane: .sites, text: "Every project Bird serves, linked or in a parked folder. HTTPS always works; the switch also redirects HTTP to HTTPS.") {
+            Table(rows, selection: $ui.selection, sortOrder: $ui.sortOrder) {
+                TableColumn("Site", value: \.domain) { site in
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(site.domain).fontWeight(.medium)
+                        Text(abbreviate(site.path))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .padding(.vertical, 2)
                 }
-                .padding(.vertical, 2)
-            }
-            TableColumn("PHP") { site in
-                SitePhpMenu(site: site, state: state, model: model)
-            }
-            .width(min: 130, ideal: 150)
-            TableColumn("HTTPS") { site in
-                Toggle("Redirect HTTP to HTTPS", isOn: Binding(
-                    get: { site.secure },
-                    set: { model.perform($0 ? "secure" : "unsecure", site.name) }
-                ))
-                .labelsHidden()
-                .help("Redirect HTTP to HTTPS (HTTPS always works)")
-            }
-            .width(52)
-            TableColumn("Type", value: \.kind) { site in
-                Text(site.kind == "linked" ? "Linked" : "Parked").foregroundStyle(.secondary)
-            }
-            .width(64)
-            TableColumn("") { site in
-                HStack(spacing: 10) {
-                    Button { model.open(site.url) } label: { Image(systemName: "safari") }
-                        .help("Open \(site.url)")
-                    Button { model.reveal(site.path) } label: { Image(systemName: "folder") }
-                        .help("Show in Finder")
-                    Button { model.openInTerminal(site.path) } label: { Image(systemName: "terminal") }
-                        .help("Open in Terminal")
+                TableColumn("PHP") { site in
+                    SitePhpMenu(site: site, state: state, model: model)
                 }
-                .buttonStyle(.borderless)
-            }
-            .width(90)
-        }
-        .contextMenu(forSelectionType: Site.ID.self) { ids in
-            if let site = site(ids.first) {
-                Button("Open in Browser") { model.open(site.url) }
-                Button("Show in Finder") { model.reveal(site.path) }
-                Button("Open in Terminal") { model.openInTerminal(site.path) }
-                Button("Copy URL") { model.copy(site.url) }
-                Divider()
-                Button(site.secure ? "Stop Redirecting to HTTPS" : "Redirect HTTP to HTTPS") {
-                    model.perform(site.secure ? "unsecure" : "secure", site.name)
+                .width(min: 130, ideal: 150)
+                TableColumn("HTTPS") { site in
+                    Toggle("Redirect HTTP to HTTPS", isOn: Binding(
+                        get: { site.secure },
+                        set: { model.perform($0 ? "secure" : "unsecure", site.name) }
+                    ))
+                    .labelsHidden()
+                    .help("Redirect HTTP to HTTPS (HTTPS always works)")
                 }
-                if site.kind == "linked" {
+                .width(52)
+                TableColumn("Type", value: \.kind) { site in
+                    Text(site.kind == "linked" ? "Linked" : "Parked").foregroundStyle(.secondary)
+                }
+                .width(64)
+                TableColumn("") { site in
+                    HStack(spacing: 10) {
+                        Button { model.open(site.url) } label: { Image(systemName: "safari") }
+                            .help("Open \(site.url)")
+                        Button { model.reveal(site.path) } label: { Image(systemName: "folder") }
+                            .help("Show in Finder")
+                        Button { model.openInTerminal(site.path) } label: { Image(systemName: "terminal") }
+                            .help("Open in Terminal")
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .width(90)
+            }
+            .contextMenu(forSelectionType: Site.ID.self) { ids in
+                if let site = site(ids.first) {
+                    Button("Open in Browser") { model.open(site.url) }
+                    Button("Show in Finder") { model.reveal(site.path) }
+                    Button("Open in Terminal") { model.openInTerminal(site.path) }
+                    Button("Copy URL") { model.copy(site.url) }
                     Divider()
-                    Button("Unlink…") { ui.unlinkCandidate = site }
+                    Button(site.secure ? "Stop Redirecting to HTTPS" : "Redirect HTTP to HTTPS") {
+                        model.perform(site.secure ? "unsecure" : "secure", site.name)
+                    }
+                    if site.kind == "linked" {
+                        Divider()
+                        Button("Unlink…") { ui.unlinkCandidate = site }
+                    }
+                }
+            } primaryAction: { ids in
+                ids.compactMap { site($0) }.forEach { model.open($0.url) }
+            }
+            .searchable(text: $ui.query, placement: .toolbar, prompt: "Filter sites")
+            .navigationTitle("Sites")
+            .navigationSubtitle("\(state.sites.count) sites · .\(state.tld)")
+            .toolbar {
+                ToolbarItem {
+                    Button {
+                        linkFolder()
+                    } label: {
+                        Label("Link Folder…", systemImage: "link.badge.plus")
+                    }
+                    .help("Serve a project folder as <name>.\(state.tld)")
+                }
+                ToolbarItem {
+                    Button {
+                        Task { await model.refresh() }
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
                 }
             }
-        } primaryAction: { ids in
-            ids.compactMap { site($0) }.forEach { model.open($0.url) }
-        }
-        .searchable(text: $ui.query, placement: .toolbar, prompt: "Filter sites")
-        .navigationTitle("Sites")
-        .navigationSubtitle("\(state.sites.count) sites · .\(state.tld)")
-        .toolbar {
-            ToolbarItem {
-                Button {
-                    linkFolder()
-                } label: {
-                    Label("Link Folder…", systemImage: "link.badge.plus")
-                }
-                .help("Serve a project folder as <name>.\(state.tld)")
+            .confirmationDialog(
+                "Unlink \(ui.unlinkCandidate?.domain ?? "")?",
+                isPresented: Binding(
+                    get: { ui.unlinkCandidate != nil },
+                    set: { if !$0 { ui.unlinkCandidate = nil } }
+                ),
+                presenting: ui.unlinkCandidate
+            ) { site in
+                Button("Unlink", role: .destructive) { model.perform("unlink", site.name) }
+            } message: { site in
+                Text("Bird stops serving \(site.domain). The folder \(abbreviate(site.path)) is not touched.")
             }
-            ToolbarItem {
-                Button {
-                    Task { await model.refresh() }
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
-            }
-        }
-        .confirmationDialog(
-            "Unlink \(ui.unlinkCandidate?.domain ?? "")?",
-            isPresented: Binding(
-                get: { ui.unlinkCandidate != nil },
-                set: { if !$0 { ui.unlinkCandidate = nil } }
-            ),
-            presenting: ui.unlinkCandidate
-        ) { site in
-            Button("Unlink", role: .destructive) { model.perform("unlink", site.name) }
-        } message: { site in
-            Text("Bird stops serving \(site.domain). The folder \(abbreviate(site.path)) is not touched.")
-        }
-        .overlay {
-            if state.sites.isEmpty {
-                VStack(spacing: 8) {
-                    Text("No sites yet").font(.title3)
-                    Text("Link a project folder, or park a folder of projects under Folders.")
-                        .foregroundStyle(.secondary)
-                    Button("Link Folder…") { linkFolder() }
+            .overlay {
+                if state.sites.isEmpty {
+                    VStack(spacing: 8) {
+                        Text("No sites yet").font(.title3)
+                        Text("Link a project folder, or park a folder of projects under Folders.")
+                            .foregroundStyle(.secondary)
+                        Button("Link Folder…") { linkFolder() }
+                    }
                 }
             }
         }
@@ -378,79 +426,80 @@ struct ProxiesPane: View {
     @StateObject private var ui = ProxiesUI()
 
     var body: some View {
-        Table(state.proxies) {
-            TableColumn("Domain") { proxy in
-                Button(proxy.domain) { model.open(proxy.url) }
-                    .buttonStyle(.link)
-            }
-            TableColumn("Upstream") { proxy in
-                Text(proxy.upstream).foregroundStyle(.secondary).textSelection(.enabled)
-            }
-            TableColumn("HTTPS") { proxy in
-                Toggle("Redirect HTTP to HTTPS", isOn: Binding(
-                    get: { proxy.secure },
-                    set: { model.perform($0 ? "secure" : "unsecure", proxy.name) }
-                ))
-                .labelsHidden()
-            }
-            .width(52)
-            TableColumn("") { proxy in
-                Button(role: .destructive) {
-                    model.perform("unproxy", proxy.name)
-                } label: {
-                    Image(systemName: "trash")
+        TablePane(pane: .proxies, text: "Serve a .\(state.tld) domain from another server, such as Vite or Docker, with HTTPS and WebSockets.") {
+            Table(state.proxies) {
+                TableColumn("Domain") { proxy in
+                    Button(proxy.domain) { model.open(proxy.url) }
+                        .buttonStyle(.link)
                 }
-                .buttonStyle(.borderless)
-                .help("Remove \(proxy.domain)")
-            }
-            .width(30)
-        }
-        .navigationTitle("Proxies")
-        .navigationSubtitle("Serve a .\(state.tld) domain from another server, e.g. Vite or Docker")
-        .toolbar {
-            ToolbarItem {
-                Button {
-                    ui.adding = true
-                } label: {
-                    Label("Add Proxy…", systemImage: "plus")
+                TableColumn("Upstream") { proxy in
+                    Text(proxy.upstream).foregroundStyle(.secondary).textSelection(.enabled)
                 }
-            }
-        }
-        .overlay {
-            if state.proxies.isEmpty {
-                VStack(spacing: 8) {
-                    Text("No proxies").font(.title3)
-                    Text("Send e.g. vite.\(state.tld) to http://127.0.0.1:5173, with HTTPS and WebSockets.")
-                        .foregroundStyle(.secondary)
-                    Button("Add Proxy…") { ui.adding = true }
+                TableColumn("HTTPS") { proxy in
+                    Toggle("Redirect HTTP to HTTPS", isOn: Binding(
+                        get: { proxy.secure },
+                        set: { model.perform($0 ? "secure" : "unsecure", proxy.name) }
+                    ))
+                    .labelsHidden()
                 }
-            }
-        }
-        .sheet(isPresented: $ui.adding) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Add Proxy").font(.headline)
-                Form {
-                    TextField("Name", text: $ui.name, prompt: Text("vite"))
-                    TextField("Upstream", text: $ui.upstream, prompt: Text("http://127.0.0.1:5173"))
-                }
-                Text(ui.name.isEmpty ? " " : "https://\(ui.name).\(state.tld) → \(ui.upstream)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack {
-                    Spacer()
-                    Button("Cancel") { ui.adding = false }
-                        .keyboardShortcut(.cancelAction)
-                    Button("Add") {
-                        model.perform("proxy", ui.name, ui.upstream)
-                        ui.adding = false
-                        ui.name = ""
+                .width(52)
+                TableColumn("") { proxy in
+                    Button(role: .destructive) {
+                        model.perform("unproxy", proxy.name)
+                    } label: {
+                        Image(systemName: "trash")
                     }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(ui.name.isEmpty || ui.upstream.isEmpty)
+                    .buttonStyle(.borderless)
+                    .help("Remove \(proxy.domain)")
+                }
+                .width(30)
+            }
+            .navigationTitle("Proxies")
+            .toolbar {
+                ToolbarItem {
+                    Button {
+                        ui.adding = true
+                    } label: {
+                        Label("Add Proxy…", systemImage: "plus")
+                    }
                 }
             }
-            .padding(20)
-            .frame(width: 420)
+            .overlay {
+                if state.proxies.isEmpty {
+                    VStack(spacing: 8) {
+                        Text("No proxies").font(.title3)
+                        Text("Send e.g. vite.\(state.tld) to http://127.0.0.1:5173, with HTTPS and WebSockets.")
+                            .foregroundStyle(.secondary)
+                        Button("Add Proxy…") { ui.adding = true }
+                    }
+                }
+            }
+            .sheet(isPresented: $ui.adding) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Add Proxy").font(.headline)
+                    Form {
+                        TextField("Name", text: $ui.name, prompt: Text("vite"))
+                        TextField("Upstream", text: $ui.upstream, prompt: Text("http://127.0.0.1:5173"))
+                    }
+                    Text(ui.name.isEmpty ? " " : "https://\(ui.name).\(state.tld) → \(ui.upstream)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        Spacer()
+                        Button("Cancel") { ui.adding = false }
+                            .keyboardShortcut(.cancelAction)
+                        Button("Add") {
+                            model.perform("proxy", ui.name, ui.upstream)
+                            ui.adding = false
+                            ui.name = ""
+                        }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(ui.name.isEmpty || ui.upstream.isEmpty)
+                    }
+                }
+                .padding(20)
+                .frame(width: 420)
+            }
         }
     }
 }
@@ -462,43 +511,44 @@ struct FoldersPane: View {
     let state: BirdState
 
     var body: some View {
-        Table(state.paths.map(ParkedFolder.init)) {
-            TableColumn("Folder") { folder in
-                Text(abbreviate(folder.path))
-            }
-            TableColumn("Sites") { folder in
-                Text("\(count(in: folder.path))").foregroundStyle(.secondary)
-            }
-            .width(50)
-            TableColumn("") { folder in
-                HStack(spacing: 10) {
-                    Button { model.reveal(folder.path) } label: { Image(systemName: "folder") }
-                        .help("Show in Finder")
-                    Button("Forget") { model.perform("forget", folder.path) }
-                        .help("Stop serving the folders in here (nothing is deleted)")
+        TablePane(pane: .folders, text: "Every folder inside a parked folder is served as <folder>.\(state.tld). Nothing in them is changed.") {
+            Table(state.paths.map(ParkedFolder.init)) {
+                TableColumn("Folder") { folder in
+                    Text(abbreviate(folder.path))
                 }
-                .buttonStyle(.borderless)
+                TableColumn("Sites") { folder in
+                    Text("\(count(in: folder.path))").foregroundStyle(.secondary)
+                }
+                .width(50)
+                TableColumn("") { folder in
+                    HStack(spacing: 10) {
+                        Button { model.reveal(folder.path) } label: { Image(systemName: "folder") }
+                            .help("Show in Finder")
+                        Button("Forget") { model.perform("forget", folder.path) }
+                            .help("Stop serving the folders in here (nothing is deleted)")
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .width(110)
             }
-            .width(110)
-        }
-        .navigationTitle("Folders")
-        .navigationSubtitle("Every folder inside a parked folder is served as <folder>.\(state.tld)")
-        .toolbar {
-            ToolbarItem {
-                Button {
-                    park()
-                } label: {
-                    Label("Park Folder…", systemImage: "plus")
+            .navigationTitle("Folders")
+            .toolbar {
+                ToolbarItem {
+                    Button {
+                        park()
+                    } label: {
+                        Label("Park Folder…", systemImage: "plus")
+                    }
                 }
             }
-        }
-        .overlay {
-            if state.paths.isEmpty {
-                VStack(spacing: 8) {
-                    Text("No parked folders").font(.title3)
-                    Text("Park e.g. ~/Code and every project in it becomes <project>.\(state.tld).")
-                        .foregroundStyle(.secondary)
-                    Button("Park Folder…") { park() }
+            .overlay {
+                if state.paths.isEmpty {
+                    VStack(spacing: 8) {
+                        Text("No parked folders").font(.title3)
+                        Text("Park e.g. ~/Code and every project in it becomes <project>.\(state.tld).")
+                            .foregroundStyle(.secondary)
+                        Button("Park Folder…") { park() }
+                    }
                 }
             }
         }
@@ -538,6 +588,7 @@ struct PhpRow: Identifiable {
 
 final class PhpUI: ObservableObject {
     @Published var removeCandidate: String?
+    @Published var showMemoryPerVersion = false
 }
 
 struct PhpPane: View {
@@ -559,63 +610,28 @@ struct PhpPane: View {
     }
 
     var body: some View {
-        Table(rows) {
-            TableColumn("Version") { row in
-                HStack(spacing: 6) {
-                    Text("PHP \(row.minor)").fontWeight(.semibold)
-                    if state.php == row.minor {
-                        Text("Global")
-                            .font(.caption.weight(.medium))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 1)
-                            .background(Capsule().fill(Color.accentColor.opacity(0.15)))
-                            .foregroundStyle(Color.accentColor)
-                    }
+        Form {
+            Section {
+                PaneHeader(
+                    pane: .php,
+                    text: "Install, update and switch between PHP versions, and set the limits PHP runs with.")
+            }
+            Section("Versions") {
+                ForEach(rows) { row in
+                    PhpVersionRow(model: model, state: state, ui: ui, row: row)
                 }
             }
-            .width(min: 110, ideal: 130)
-            TableColumn("Status") { row in
-                PhpStatus(row: row, update: model.updates[row.minor], loading: model.available == nil)
+            Section {
+                PhpLimits(model: model, state: state, ui: ui)
+            } footer: {
+                Text("Empty fields use the value in each version's php.ini.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .width(min: 180, ideal: 220)
-            TableColumn("") { row in
-                HStack(spacing: 8) {
-                    if let installed = row.installed {
-                        if let update = model.updates[row.minor] {
-                            Button(update == installed.version ? "Update Build" : "Update to \(update)") {
-                                model.perform(
-                                    ["php:update", row.minor], activity: "Updating PHP \(row.minor)…",
-                                    then: { await model.loadAvailable() })
-                            }
-                            .buttonStyle(.borderedProminent)
-                        }
-                        if state.php != row.minor {
-                            Button("Make Global") { model.perform("use", row.minor) }
-                                .buttonStyle(.bordered)
-                        }
-                        Button(role: .destructive) {
-                            ui.removeCandidate = installed.minor
-                        } label: {
-                            Text("Remove…")
-                        }
-                        .buttonStyle(.bordered)
-                    } else {
-                        Button("Install") {
-                            model.perform(
-                                ["php:install", row.minor], activity: "Installing PHP \(row.minor)…",
-                                then: { await model.loadAvailable() })
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                }
-                .controlSize(.small)
-                .disabled(model.activity != nil)
-            }
-            .width(min: 260, ideal: 300)
         }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
         .navigationTitle("PHP")
-        .navigationSubtitle(
-            "Opcache \(state.opcache ? "on" : "off") · Xdebug \(state.xdebug == "auto" ? "on trigger" : state.xdebug)")
         .toolbar {
             ToolbarItem {
                 if !model.updates.isEmpty {
@@ -656,6 +672,66 @@ struct PhpPane: View {
     }
 }
 
+/// One PHP version: `8.5 (8.5.11)`, its status, and what can be done with it.
+/// An update names the version it installs.
+struct PhpVersionRow: View {
+    @ObservedObject var model: BirdModel
+    let state: BirdState
+    @ObservedObject var ui: PhpUI
+    let row: PhpRow
+
+    var body: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 6) {
+                Text(row.minor).fontWeight(.semibold)
+                if let installed = row.installed {
+                    Text("(\(installed.version))").foregroundStyle(.secondary)
+                }
+                if state.php == row.minor {
+                    Text("Global")
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+                        .foregroundStyle(Color.accentColor)
+                        .help("The PHP version sites and the php command use unless a site pins another")
+                }
+            }
+            .frame(width: 170, alignment: .leading)
+            PhpStatus(row: row, update: model.updates[row.minor], loading: model.available == nil)
+            Spacer()
+            HStack(spacing: 8) {
+                if let installed = row.installed {
+                    if let update = model.updates[row.minor] {
+                        Button(update == installed.version ? "Update Build" : "Update to \(update)") {
+                            model.perform(
+                                ["php:update", row.minor], activity: "Updating PHP \(row.minor)…",
+                                then: { await model.loadAvailable() })
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .help(update == installed.version
+                            ? "Bird has rebuilt PHP \(installed.version), e.g. with fixes or other extensions"
+                            : "Install PHP \(update)")
+                    }
+                    if state.php != row.minor {
+                        Button("Make Global") { model.perform("use", row.minor) }
+                    }
+                    Button("Remove…", role: .destructive) { ui.removeCandidate = installed.minor }
+                } else {
+                    Button(row.latest.map { "Install \($0)" } ?? "Install") {
+                        model.perform(
+                            ["php:install", row.minor], activity: "Installing PHP \(row.minor)…",
+                            then: { await model.loadAvailable() })
+                    }
+                }
+            }
+            .controlSize(.small)
+            .disabled(model.activity != nil)
+        }
+        .padding(.vertical, 2)
+    }
+}
+
 struct PhpStatus: View {
     let row: PhpRow
     let update: String?
@@ -664,29 +740,101 @@ struct PhpStatus: View {
     var body: some View {
         if let installed = row.installed {
             HStack(spacing: 5) {
-                Image(systemName: update == nil ? "checkmark.circle.fill" : "arrow.down.circle.fill")
-                    .foregroundStyle(update == nil ? Color.green : Color.orange)
-                // The installed version first; then what an update brings: a newer
-                // version, or a new build of the same one (other extensions or
-                // fixes in Bird's build).
-                Text(installed.version)
+                if let update {
+                    // What the update brings: a newer version, or a new build
+                    // of the same one (other extensions or fixes in Bird's build).
+                    Text(update == installed.version ? "New build available" : "\(update) available")
+                        .foregroundStyle(.orange)
+                } else {
+                    Text("Installed").foregroundStyle(.green)
+                }
                 if installed.source != "bird" {
                     Text("(\(installed.source))").foregroundStyle(.secondary)
                         .help("Installed from \(installed.source); updating installs Bird's build")
                 }
-                if let update, update != installed.version {
-                    Text("→ \(update) available").foregroundStyle(.orange).font(.caption)
-                } else if update != nil {
-                    Text("· new build available").foregroundStyle(.orange).font(.caption)
-                        .help("Bird has rebuilt PHP \(installed.version), e.g. with fixes or other extensions")
+            }
+            .fontWeight(.medium)
+        } else {
+            Text(loading ? "…" : "Not installed").foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// Upload size and memory limit (`bird php:limits`), like Herd's: one value
+/// for all versions, and the memory limit per version under a disclosure.
+struct PhpLimits: View {
+    @ObservedObject var model: BirdModel
+    let state: BirdState
+    @ObservedObject var ui: PhpUI
+
+    /// The global version's own value, shown when Bird sets none.
+    private var global: PhpVersion? {
+        state.phpVersions.first { $0.minor == state.php } ?? state.phpVersions.last
+    }
+
+    var body: some View {
+        LimitRow(
+            title: "Max File Upload Size",
+            caption: "The largest file PHP accepts as an upload, in MB. Form posts may be as large.",
+            value: state.phpUploadMb,
+            placeholder: global?.uploadMb,
+            set: { set("--upload", $0) })
+        DisclosureGroup(isExpanded: $ui.showMemoryPerVersion) {
+            ForEach(state.phpVersions.reversed()) { v in
+                LimitRow(
+                    title: v.minor,
+                    caption: nil,
+                    value: v.memoryMbOverride,
+                    placeholder: state.phpMemoryMb ?? v.memoryMb,
+                    set: { set("--memory", $0, php: v.minor) })
+            }
+        } label: {
+            LimitRow(
+                title: "Memory Limit",
+                caption: "The most memory a PHP script may use, in MB; -1 for no limit. Open to set it per version.",
+                value: state.phpMemoryMb,
+                placeholder: global?.memoryMb,
+                set: { set("--memory", $0) })
+        }
+    }
+
+    private func set(_ flag: String, _ mb: Int?, php: String? = nil) {
+        var args = ["php:limits", flag, mb.map(String.init) ?? "default"]
+        if let php { args += ["--php", php] }
+        model.perform(args)
+    }
+}
+
+/// A title and caption on the left, a number field in MB on the right. An
+/// empty field means "not set"; the placeholder shows what applies then.
+struct LimitRow: View {
+    let title: String
+    let caption: String?
+    let value: Int?
+    let placeholder: Int?
+    let set: (Int?) -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                if let caption {
+                    Text(caption)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
-        } else {
-            HStack(spacing: 5) {
-                Image(systemName: "circle.dashed").foregroundStyle(.tertiary)
-                Text(row.latest.map { "Not installed · \($0)" } ?? (loading ? "…" : "Not installed"))
-                    .foregroundStyle(.secondary)
-            }
+            Spacer()
+            TextField(
+                title,
+                value: Binding(get: { value }, set: { if $0 != value { set($0) } }),
+                format: .number.grouping(.never),
+                prompt: Text(placeholder.map { String($0) } ?? ""))
+                .labelsHidden()
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 90)
         }
     }
 }
@@ -851,6 +999,11 @@ struct SettingsPane: View {
 
     var body: some View {
         Form {
+            Section {
+                PaneHeader(
+                    pane: .settings,
+                    text: "The global PHP version, Opcache and Xdebug, where Bird keeps its files, and a check that everything works.")
+            }
             Section("PHP") {
                 QuickSettings(model: model, state: state)
             }
