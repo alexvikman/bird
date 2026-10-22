@@ -312,6 +312,7 @@ pub fn main() -> Result<()> {
                 bail!("no proxy named {name}");
             }
             cfg.save()?;
+            sync_certificates(&cfg);
             ui::ok(format!("removed proxy {}", cfg.domain(&name)));
             Ok(())
         }
@@ -419,6 +420,17 @@ fn status() -> Result<()> {
     Ok(())
 }
 
+/// Updates the certificate files laravel-vite-plugin reads (see `certs`).
+/// The daemon does it too, within seconds; doing it here as well means they
+/// are there when the command returns, daemon or not.
+pub fn sync_certificates(cfg: &Config) {
+    if let Err(e) = crate::certs::sync(cfg) {
+        ui::warn(format!(
+            "could not update the certificate files for Vite: {e:#}"
+        ));
+    }
+}
+
 fn human_duration(secs: u64) -> String {
     match secs {
         s if s < 60 => format!("{s}s"),
@@ -468,6 +480,7 @@ fn park(path: Option<PathBuf>) -> Result<()> {
     if !cfg.paths.contains(&path) {
         cfg.paths.push(path.clone());
         cfg.save()?;
+        sync_certificates(&cfg);
     }
     let count = sites::all_sites(&cfg)
         .iter()
@@ -490,6 +503,7 @@ fn forget(path: Option<PathBuf>) -> Result<()> {
         bail!("{} is not parked", path.display());
     }
     cfg.save()?;
+    sync_certificates(&cfg);
     ui::ok(format!("forgot {}", path.display()));
     Ok(())
 }
@@ -520,6 +534,7 @@ fn link(name: Option<String>, secure: bool, isolate: Option<String>) -> Result<(
         site.php = isolate;
     }
     cfg.save()?;
+    sync_certificates(&cfg);
     ui::ok(format!(
         "{} → {}",
         bold(&format!("https://{}", cfg.domain(&name))),
@@ -547,6 +562,7 @@ fn unlink(name: Option<String>) -> Result<()> {
     }
     // Leftover pins/secure flags stay in case it's also a parked site; save() drops empty entries.
     cfg.save()?;
+    sync_certificates(&cfg);
     ui::ok(format!("unlinked {}", cfg.domain(&name)));
     Ok(())
 }
@@ -792,6 +808,7 @@ fn add_proxy(name: String, upstream: String, secure: bool) -> Result<()> {
         },
     );
     cfg.save()?;
+    sync_certificates(&cfg);
     ui::ok(format!("https://{} → {upstream}", cfg.domain(&name)));
     Ok(())
 }
@@ -1283,6 +1300,7 @@ fn set_tld(tld: Option<String>) -> Result<()> {
             "made a new CA for *.{tld}; restart the daemon and run `bird install` to trust it"
         ));
     }
+    sync_certificates(&cfg);
     ui::ok(format!("sites are now served as <name>.{tld}"));
     Ok(())
 }

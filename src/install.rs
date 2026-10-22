@@ -107,6 +107,7 @@ pub fn install(user_only: bool, php_version: Option<String>) -> Result<()> {
         cfg.save()?;
     }
     shim::refresh()?;
+    crate::cli::sync_certificates(&cfg);
     if !p.composer_phar().exists() {
         match shim::install_composer() {
             Ok(()) => ui::ok("installed Composer"),
@@ -496,6 +497,14 @@ pub fn uninstall(purge: bool) -> Result<()> {
             linux::untrust_ca_in_browsers(name);
         }
     }
+    match crate::certs::remove_link() {
+        Ok(true) => ui::ok(format!("removed {}", crate::certs::valet_link().display())),
+        Ok(false) => {}
+        Err(e) => ui::warn(format!(
+            "could not remove {}: {e}",
+            crate::certs::valet_link().display()
+        )),
+    }
     if purge {
         if paths().home.join("config.toml").exists() || paths().php_root().exists() {
             std::fs::remove_dir_all(&paths().home)?;
@@ -752,6 +761,47 @@ pub fn doctor() -> Result<()> {
         "certificate authority trusted".into(),
         "certificate authority not trusted — run `bird install`".into(),
     );
+
+    // laravel-vite-plugin's detectTls/valetTls (see certs.rs).
+    let link = crate::certs::valet_link();
+    match crate::certs::link_state() {
+        crate::certs::Link::Bird => {
+            let certificates = paths().valet_dir().join("Certificates");
+            let missing: Vec<String> = crate::certs::domains(&cfg)
+                .into_iter()
+                .filter(|d| {
+                    !certificates.join(format!("{d}.crt")).is_file()
+                        || !certificates.join(format!("{d}.key")).is_file()
+                })
+                .collect();
+            check(
+                missing.is_empty(),
+                format!("certificates for Vite in {}/Certificates", link.display()),
+                format!(
+                    "no certificate files for Vite yet for {} — the daemon writes them",
+                    missing.join(", ")
+                ),
+            );
+        }
+        crate::certs::Link::Missing => check(
+            false,
+            String::new(),
+            format!(
+                "{} is missing, so Vite's detectTls can't find Bird's certificates — start the daemon",
+                link.display()
+            ),
+        ),
+        crate::certs::Link::Other => ui::warn(format!(
+            "{} belongs to another tool (Valet?); Vite's detectTls uses its certificates, not Bird's",
+            link.display()
+        )),
+    }
+    if cfg!(target_os = "macos") && crate::certs::herd_config_dir().exists() {
+        ui::warn(format!(
+            "{} exists, so Vite's detectTls reads Herd's certificates, not Bird's",
+            crate::certs::herd_config_dir().display()
+        ));
+    }
 
     // Only a running Herd competes for ports 80/443 and /etc/resolver.
     let herd_running = Command::new("pgrep")

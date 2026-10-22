@@ -174,6 +174,7 @@ async fn main(http_port: Option<u16>, https_port: Option<u16>) -> Result<()> {
     tokio::spawn(control_loop(control, state.clone()));
     tokio::spawn(idle_reaper(state.clone()));
     tokio::spawn(log_janitor());
+    tokio::spawn(cert_sync(state.clone()));
 
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::select! {
@@ -283,6 +284,46 @@ async fn log_janitor() {
             Ok(Ok(())) => {}
         }
         tokio::time::sleep(Duration::from_secs(10 * 60)).await;
+    }
+}
+
+/// Keeps the certificate files for laravel-vite-plugin in step with the
+/// sites (see `certs`). Parked folders come and go without a config change,
+/// so this polls; a pass that finds nothing to do only reads a few files.
+async fn cert_sync(state: Arc<State>) {
+    let mut last_error = None;
+    let mut warned_link = false;
+    loop {
+        let cfg = state.config();
+        match tokio::task::spawn_blocking(move || crate::certs::sync(&cfg)).await {
+            Ok(Ok(synced)) => {
+                last_error = None;
+                if !synced.written.is_empty() {
+                    tracing::info!("wrote certificates for {}", synced.written.join(", "));
+                }
+                if !synced.removed.is_empty() {
+                    tracing::info!("removed certificates for {}", synced.removed.join(", "));
+                }
+                if synced.link == crate::certs::Link::Other && !warned_link {
+                    warned_link = true;
+                    tracing::warn!(
+                        "{} belongs to another tool (Valet?); laravel-vite-plugin won't find \
+                         Bird's certificates in {}",
+                        crate::certs::valet_link().display(),
+                        paths().valet_dir().join("Certificates").display()
+                    );
+                }
+            }
+            Ok(Err(e)) => {
+                let message = format!("{e:#}");
+                if last_error.as_ref() != Some(&message) {
+                    tracing::warn!("could not update the certificate files: {message}");
+                    last_error = Some(message);
+                }
+            }
+            Err(e) => tracing::warn!("could not update the certificate files: {e}"),
+        }
+        tokio::time::sleep(Duration::from_secs(10)).await;
     }
 }
 

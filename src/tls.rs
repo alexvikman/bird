@@ -30,6 +30,7 @@ pub const CA_NAME_PREFIX: &str = "Bird Development CA";
 
 pub struct Ca {
     issuer: Issuer<'static, KeyPair>,
+    cert_pem: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,7 +68,7 @@ pub fn ensure_ca_exists(tld: &str) -> Result<()> {
 /// A self-signed CA that can only issue certificates for `<tld>` and its
 /// subdomains, and none for IP addresses. The system trusts this CA, so a
 /// leaked key must not be usable to impersonate real domains.
-fn generate_ca(tld: &str) -> Result<(String, String)> {
+pub fn generate_ca(tld: &str) -> Result<(String, String)> {
     let user = user_home()
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -138,7 +139,7 @@ fn store_ca(cert_pem: &str, key_pem: &str) -> Result<()> {
     Ok(())
 }
 
-fn parse_pem(pem: &str) -> Option<CertificateDer<'static>> {
+pub fn parse_pem(pem: &str) -> Option<CertificateDer<'static>> {
     CertificateDer::from_pem_slice(pem.as_bytes()).ok()
 }
 
@@ -187,17 +188,22 @@ impl Ca {
         Self::from_pem(&cert, &std::fs::read_to_string(paths().ca_key())?)
     }
 
-    fn from_pem(cert: &str, key: &str) -> Result<Self> {
+    pub fn from_pem(cert: &str, key: &str) -> Result<Self> {
         let key = KeyPair::from_pem(key)?;
         let issuer = Issuer::from_ca_cert_pem(cert, key)?;
-        Ok(Self { issuer })
+        Ok(Self {
+            issuer,
+            cert_pem: cert.to_string(),
+        })
     }
 
-    fn sign_leaf(&self, host: &str) -> Result<(rcgen::Certificate, KeyPair)> {
+    /// A leaf for `names`; the first one is also the common name.
+    fn sign_leaf(&self, names: &[&str]) -> Result<(rcgen::Certificate, KeyPair)> {
         let key = KeyPair::generate()?;
-        let mut params = CertificateParams::new(vec![host.to_string()])?;
+        let mut params =
+            CertificateParams::new(names.iter().map(|n| n.to_string()).collect::<Vec<_>>())?;
         let mut dn = DistinguishedName::new();
-        dn.push(DnType::CommonName, host);
+        dn.push(DnType::CommonName, names[0]);
         params.distinguished_name = dn;
         let now = OffsetDateTime::now_utc();
         params.not_before = now - Duration::days(1);
@@ -211,10 +217,19 @@ impl Ca {
     }
 
     pub fn issue(&self, host: &str) -> Result<CertifiedKey> {
-        let (cert, key) = self.sign_leaf(host)?;
+        let (cert, key) = self.sign_leaf(&[host])?;
         let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
         let signing_key = rustls::crypto::ring::sign::any_supported_type(&key_der)?;
         Ok(CertifiedKey::new(vec![cert.der().clone()], signing_key))
+    }
+
+    /// A certificate for `domain` and `*.domain` as PEM files: the leaf
+    /// followed by the CA (the chain), and the private key.
+    pub fn issue_pem(&self, domain: &str) -> Result<(String, String)> {
+        let wildcard = format!("*.{domain}");
+        let (cert, key) = self.sign_leaf(&[domain, &wildcard])?;
+        let chain = format!("{}{}", cert.pem(), self.cert_pem.trim_start());
+        Ok((chain, key.serialize_pem()))
     }
 }
 
@@ -304,20 +319,37 @@ mod tests {
         let ca = Ca::from_pem(&cert_pem, &key_pem).unwrap();
 
         for host in ["app.test", "www.api.app.test"] {
-            let (leaf, _) = ca.sign_leaf(host).unwrap();
+            let (leaf, _) = ca.sign_leaf(&[host]).unwrap();
             verify(&cert_pem, leaf.der(), host).unwrap_or_else(|e| panic!("{host}: {e:?}"));
         }
         for host in ["example.com", "test.example.com", "nottest"] {
-            let (leaf, _) = ca.sign_leaf(host).unwrap();
+            let (leaf, _) = ca.sign_leaf(&[host]).unwrap();
             assert!(
                 verify(&cert_pem, leaf.der(), host).is_err(),
                 "{host} must be rejected"
             );
         }
-        let (leaf, _) = ca.sign_leaf("127.0.0.1").unwrap();
+        let (leaf, _) = ca.sign_leaf(&["127.0.0.1"]).unwrap();
         assert!(
             verify(&cert_pem, leaf.der(), "127.0.0.1").is_err(),
             "IP certs must be rejected"
         );
+    }
+
+    #[test]
+    fn pem_files_cover_the_domain_and_its_subdomains() {
+        let (ca_pem, ca_key) = generate_ca("test").unwrap();
+        let ca = Ca::from_pem(&ca_pem, &ca_key).unwrap();
+        let (chain, key) = ca.issue_pem("app.test").unwrap();
+        let certs: Vec<_> = CertificateDer::pem_slice_iter(chain.as_bytes())
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(certs.len(), 2, "leaf and CA");
+        assert_eq!(certs[1], parse_pem(&ca_pem).unwrap());
+        for host in ["app.test", "www.app.test"] {
+            verify(&ca_pem, &certs[0], host).unwrap_or_else(|e| panic!("{host}: {e:?}"));
+        }
+        assert!(verify(&ca_pem, &certs[0], "other.test").is_err());
+        assert!(KeyPair::from_pem(&key).is_ok());
     }
 }

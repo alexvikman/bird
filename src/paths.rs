@@ -8,6 +8,7 @@
 //!   bin/               bird itself + shims (php, php8.4, composer) — put this on PATH
 //!   php/8.4/           bin/php, bin/php-fpm, php.ini, conf.d/, VERSION
 //!   ca/                local certificate authority (ca.pem, ca-key.pem)
+//!   valet/             Certificates/<domain>.crt|.key in Valet's layout (~/.config/valet links here)
 //!   run/               sockets and pid files
 //!   log/               daemon and php-fpm logs
 //! ```
@@ -87,6 +88,11 @@ impl Paths {
 
     pub fn ca_key(&self) -> PathBuf {
         self.ca_dir().join("ca-key.pem")
+    }
+
+    /// A Valet-style config directory for laravel-vite-plugin (see `certs`).
+    pub fn valet_dir(&self) -> PathBuf {
+        self.home.join("valet")
     }
 
     /// Sockets and pid files. Unix socket paths are limited to 104 bytes on

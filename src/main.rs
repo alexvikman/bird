@@ -1,3 +1,4 @@
+mod certs;
 mod cli;
 mod config;
 mod control;

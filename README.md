@@ -50,6 +50,30 @@ profiles and traces land in `~/.bird/log/xdebug` (kept for a week, at most
 every request, `off` ignores triggers. Xdebug's settings live in
 `~/.bird/php/<version>/xdebug.d/` and can be overridden in `conf.d/`.
 
+### Vite over HTTPS
+
+laravel-vite-plugin's `detectTls: 'myapp.test'` (or `valetTls`) works with
+Bird alone. The plugin reads `Certificates/myapp.test.crt` and `.key` from
+Valet's config directory, so Bird keeps such a pair for every site and proxy
+in `~/.bird/valet/Certificates` and links `~/.config/valet` there. The `.crt`
+holds the leaf and Bird's CA, is valid for `myapp.test` and `*.myapp.test`,
+and is renewed 30 days before it expires (after 397 days); the `.key` is
+readable only by you. The daemon keeps the files in step with your sites
+within seconds, and `link`, `unlink`, `park`, `forget`, `proxy`, `unproxy`
+and `tld` update them right away. `detectTls: true` (the directory name plus
+the TLD) works too: Bird writes a `config.json` with the TLD next to them.
+
+- **Herd wins while its config directory exists.** The plugin uses
+  `~/Library/Application Support/Herd/config/valet` whenever that directory
+  is there, Herd running or not, and only then looks at `~/.config/valet`.
+  Delete (or move away) Herd's directory to switch to Bird's certificates;
+  `bird doctor` warns while it exists.
+- **A real Valet install is left alone.** If `~/.config/valet` is already a
+  directory (or a link somewhere else), Bird doesn't touch it, and the plugin
+  keeps using Valet's certificates. Bird's are still in
+  `~/.bird/valet/Certificates` if you want to point Vite at them yourself.
+- `bird uninstall` removes the `~/.config/valet` link.
+
 ## Commands
 
 ```
@@ -106,6 +130,7 @@ is enough on your own Mac; "Open menu bar app at login" is in Settings.
 ~/.bird/bin/          bird + shims — put this first on PATH
 ~/.bird/php/8.4/      bin/php, bin/php-fpm, php.ini, conf.d/
 ~/.bird/ca/           local certificate authority
+~/.bird/valet/        Certificates/<site>.test.crt|.key for Vite (~/.config/valet links here)
 ~/.bird/log/          bird.log, php-8.4-fpm.log (rotated at 10 MB; 5 gzipped generations kept)
 ```
 

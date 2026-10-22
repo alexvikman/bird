@@ -132,6 +132,7 @@ pub fn import(install_php: bool) -> Result<()> {
         needed.insert(v.clone());
     }
     cfg.save()?;
+    crate::cli::sync_certificates(&cfg);
     println!(
         "{}",
         dim(&format!(

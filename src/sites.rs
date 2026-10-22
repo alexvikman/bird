@@ -90,7 +90,7 @@ fn make_site(cfg: &Config, name: &str, path: PathBuf, kind: SiteKind) -> Site {
 /// Whether `name` is made of DNS labels (`app`, `api.app`): letters, digits,
 /// `-` and `_` between dots. Anything else (`/`, `\\`, `..`, an empty label)
 /// could make `parked.join(name)` point outside the parked folder.
-fn is_site_name(name: &str) -> bool {
+pub fn is_site_name(name: &str) -> bool {
     !name.is_empty()
         && name.split('.').all(|label| {
             !label.is_empty()
