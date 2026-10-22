@@ -181,8 +181,19 @@ while read -r name url sha cond; do
     download_flags+=(-U "$name:$url")
 done < <(sed -e 's/#.*//' "$here/sources.txt")
 [ "${SPC_PREBUILT:-}" = "1" ] && download_flags+=(--prefer-pre-built)
-"$spc" download --with-php="$full" --for-extensions="$all_exts" --for-libs="$libs" \
-    --ignore-cache-sources=php-src "${download_flags[@]}" ${spc_flags[@]+"${spc_flags[@]}"}
+# spc's --retry only becomes curl's --retry, and curl reports a pecl.php.net
+# HTTP 500 as error 56, which it does not treat as transient: one bad response
+# failed the whole build. So retry the whole step, with time for the server to
+# recover. A retry fetches php-src and the -U sources again (spc always
+# re-downloads those) but skips every other source it already has.
+attempt=1
+until "$spc" download --with-php="$full" --for-extensions="$all_exts" --for-libs="$libs" \
+    --ignore-cache-sources=php-src "${download_flags[@]}" ${spc_flags[@]+"${spc_flags[@]}"}; do
+    [ "$attempt" -lt 3 ] || die "downloading sources failed $attempt times"
+    log "Downloading sources failed; retrying in $((attempt * 30))s"
+    sleep $((attempt * 30))
+    attempt=$((attempt + 1))
+done
 
 # spc does not verify what it downloads. Check what we can before building:
 # php-src against the sha256 php.net publishes, pinned sources against
