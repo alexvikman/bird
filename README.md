@@ -61,6 +61,7 @@ bird secure [NAME] | unsecure [NAME]          # redirect HTTP → HTTPS
 bird proxy NAME http://127.0.0.1:5173 | unproxy NAME
 bird use 8.4 | isolate 8.3 [--site NAME] | unisolate | which-php
 bird php:install 8.3 8.4 | php:list [--available] | php:update | php:remove 8.3
+bird php:limits [--memory MB|-1] [--upload MB] [--php 8.3]   # memory_limit, upload size
 bird opcache [on|off]                          # on by default; files revalidated every request
 bird xdebug [auto|on|off]                      # auto by default: Xdebug only when triggered
 bird debug artisan migrate                     # php with Xdebug, starts a debug session

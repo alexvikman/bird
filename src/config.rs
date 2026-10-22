@@ -34,8 +34,19 @@ pub struct Config {
     /// Where PHP builds are downloaded from: Bird's own release (with
     /// manifest.json), or a dl.static-php.dev distribution.
     pub php_mirror: String,
+    /// PHP's upload_max_filesize and post_max_size in MB (`bird php:limits`).
+    /// Unset: php.ini decides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub php_upload_mb: Option<u64>,
+    /// PHP's memory_limit in MB, -1 for no limit (`bird php:limits`).
+    /// Unset: php.ini decides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub php_memory_mb: Option<i64>,
     /// Parked directories: every subdirectory is served as `<dir>.<tld>`.
     pub paths: Vec<PathBuf>,
+    /// memory_limit for single PHP versions, over `php_memory_mb`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub php_memory_mb_by_version: BTreeMap<String, i64>,
     /// Linked sites and per-site settings for parked sites, keyed by site name.
     pub sites: BTreeMap<String, SiteConfig>,
     /// Reverse proxies, keyed by site name.
@@ -93,6 +104,9 @@ impl Default for Config {
             opcache: true,
             xdebug: XdebugMode::Auto,
             php_mirror: crate::php::DEFAULT_MIRROR.into(),
+            php_upload_mb: None,
+            php_memory_mb: None,
+            php_memory_mb_by_version: BTreeMap::new(),
             paths: Vec::new(),
             sites: BTreeMap::new(),
             proxies: BTreeMap::new(),
@@ -141,6 +155,14 @@ impl Config {
 
     pub fn site_mut(&mut self, name: &str) -> &mut SiteConfig {
         self.sites.entry(name.to_string()).or_default()
+    }
+
+    /// The memory_limit Bird sets for a PHP version, if any.
+    pub fn php_memory_mb_for(&self, minor: &str) -> Option<i64> {
+        self.php_memory_mb_by_version
+            .get(minor)
+            .copied()
+            .or(self.php_memory_mb)
     }
 
     pub fn domain(&self, name: &str) -> String {

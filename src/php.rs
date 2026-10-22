@@ -440,7 +440,7 @@ fn install_into(cfg: &Config, minor: &str, dir: &Path) -> Result<String> {
             (full, SOURCE_STATIC_PHP, None)
         }
     };
-    write_managed_ini(minor, cfg.opcache)?;
+    write_managed_ini(minor, cfg)?;
     if has_xdebug(minor) {
         write_xdebug_ini(minor, cfg.xdebug == crate::config::XdebugMode::On)?;
     }
@@ -459,17 +459,35 @@ fn install_into(cfg: &Config, minor: &str, dir: &Path) -> Result<String> {
     Ok(full)
 }
 
-/// Settings Bird owns, rewritten on install/update and by `bird opcache`
-/// (php.ini stays the user's). conf.d is parsed after php.ini, so these win
-/// over php.ini.
+/// Settings Bird owns, rewritten on install/update and by `bird opcache` and
+/// `bird php:limits` (php.ini stays the user's). conf.d is parsed after
+/// php.ini, so these win over php.ini.
 const MANAGED_INI: &str = "00-bird.ini";
 
-pub fn managed_ini(opcache: bool) -> String {
+/// Limits Bird sets for one PHP version; unset ones are left to php.ini.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Limits {
+    /// memory_limit in MB, -1 for no limit.
+    pub memory_mb: Option<i64>,
+    /// upload_max_filesize and post_max_size in MB.
+    pub upload_mb: Option<u64>,
+}
+
+impl Limits {
+    pub fn for_version(cfg: &Config, minor: &str) -> Self {
+        Self {
+            memory_mb: cfg.php_memory_mb_for(minor),
+            upload_mb: cfg.php_upload_mb,
+        }
+    }
+}
+
+pub fn managed_ini(opcache: bool, limits: Limits) -> String {
     let enable = u8::from(opcache);
-    format!(
-        "; Managed by Bird and rewritten on install/update and `bird opcache on|off`.\n\
-         ; conf.d is read after php.ini, so override these in a later file,\n\
-         ; e.g. conf.d/99-local.ini.\n\
+    let mut ini = format!(
+        "; Managed by Bird and rewritten on install/update, `bird opcache on|off`\n\
+         ; and `bird php:limits`. conf.d is read after php.ini, so override these\n\
+         ; in a later file, e.g. conf.d/99-local.ini.\n\
          \n\
          ; Opcache checks every file's modification time on every request\n\
          ; (revalidate_freq = 0), so code changes show up on the next request.\n\
@@ -478,14 +496,81 @@ pub fn managed_ini(opcache: bool) -> String {
          opcache.revalidate_freq = 0\n\
          opcache.memory_consumption = 256\n\
          opcache.max_accelerated_files = 50000\n"
-    )
+    );
+    if limits.memory_mb.is_some() || limits.upload_mb.is_some() {
+        ini.push_str("\n; `bird php:limits` (the app's PHP page)\n");
+    }
+    if let Some(mb) = limits.memory_mb {
+        let value = if mb < 0 {
+            "-1".into()
+        } else {
+            format!("{mb}M")
+        };
+        ini.push_str(&format!("memory_limit = {value}\n"));
+    }
+    if let Some(mb) = limits.upload_mb {
+        // A form posting the file is a little larger than the file itself;
+        // the same size for both is what users expect from one setting.
+        ini.push_str(&format!(
+            "upload_max_filesize = {mb}M\npost_max_size = {mb}M\n"
+        ));
+    }
+    ini
 }
 
-pub fn write_managed_ini(minor: &str, opcache: bool) -> Result<()> {
+pub fn write_managed_ini(minor: &str, cfg: &Config) -> Result<()> {
     let dir = paths().php_conf_d(minor);
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join(MANAGED_INI), managed_ini(opcache))?;
+    std::fs::write(
+        dir.join(MANAGED_INI),
+        managed_ini(cfg.opcache, Limits::for_version(cfg, minor)),
+    )?;
     Ok(())
+}
+
+/// A size from php.ini (`512M`, `1G`, `-1`, or bytes) in MB; -1 stays -1.
+pub fn ini_size_mb(value: &str) -> Option<i64> {
+    let value = value.trim().trim_matches('"');
+    if value == "-1" {
+        return Some(-1);
+    }
+    let (digits, unit) = match value.char_indices().last()? {
+        (i, c) if c.is_ascii_alphabetic() => (&value[..i], c.to_ascii_uppercase()),
+        _ => (value, 'B'),
+    };
+    let n: i64 = digits.trim().parse().ok()?;
+    match unit {
+        'B' => Some(n >> 20),
+        'K' => Some(n >> 10),
+        'M' => Some(n),
+        'G' => Some(n << 10),
+        _ => None,
+    }
+}
+
+/// The last value of `key` in a PHP version's php.ini (what applies when
+/// Bird sets nothing).
+pub fn php_ini_value(minor: &str, key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(paths().php_ini(minor)).ok()?;
+    text.lines()
+        .filter_map(|line| line.split(';').next())
+        .filter_map(|line| line.split_once('='))
+        .filter(|(k, _)| k.trim() == key)
+        .map(|(_, v)| v.trim().to_string())
+        .next_back()
+}
+
+/// The limits a PHP version runs with: Bird's, else its php.ini's (in MB).
+pub fn effective_limits(cfg: &Config, minor: &str) -> (Option<i64>, Option<i64>) {
+    let set = Limits::for_version(cfg, minor);
+    let memory = set
+        .memory_mb
+        .or_else(|| php_ini_value(minor, "memory_limit").and_then(|v| ini_size_mb(&v)));
+    let upload = set
+        .upload_mb
+        .map(|mb| mb as i64)
+        .or_else(|| php_ini_value(minor, "upload_max_filesize").and_then(|v| ini_size_mb(&v)));
+    (memory, upload)
 }
 
 pub fn xdebug_so(minor: &str) -> PathBuf {
@@ -910,11 +995,66 @@ Jek2xLuMGjKUUEIcBnDbxJe3uqtkULsQ4=
 
     #[test]
     fn managed_ini_revalidates_every_request() {
-        let on = managed_ini(true);
+        let on = managed_ini(true, Limits::default());
         assert!(on.contains("opcache.enable = 1"));
         assert!(on.contains("opcache.validate_timestamps = 1"));
         assert!(on.contains("opcache.revalidate_freq = 0"));
-        assert!(managed_ini(false).contains("opcache.enable = 0"));
+        assert!(managed_ini(false, Limits::default()).contains("opcache.enable = 0"));
+        // Nothing set: php.ini decides.
+        assert!(!on.contains("memory_limit"));
+        assert!(!on.contains("upload_max_filesize"));
+    }
+
+    #[test]
+    fn managed_ini_sets_the_limits() {
+        let ini = managed_ini(
+            true,
+            Limits {
+                memory_mb: Some(1024),
+                upload_mb: Some(64),
+            },
+        );
+        assert!(ini.contains("memory_limit = 1024M\n"));
+        assert!(ini.contains("upload_max_filesize = 64M\n"));
+        assert!(ini.contains("post_max_size = 64M\n"));
+        let unlimited = managed_ini(
+            true,
+            Limits {
+                memory_mb: Some(-1),
+                upload_mb: None,
+            },
+        );
+        assert!(unlimited.contains("memory_limit = -1\n"));
+        assert!(!unlimited.contains("post_max_size"));
+    }
+
+    #[test]
+    fn limits_per_version_override_the_global_one() {
+        let mut cfg = Config {
+            php_memory_mb: Some(512),
+            php_upload_mb: Some(64),
+            ..Config::default()
+        };
+        cfg.php_memory_mb_by_version.insert("8.3".into(), 2048);
+        assert_eq!(Limits::for_version(&cfg, "8.3").memory_mb, Some(2048));
+        assert_eq!(Limits::for_version(&cfg, "8.5").memory_mb, Some(512));
+        assert_eq!(Limits::for_version(&cfg, "8.5").upload_mb, Some(64));
+        assert_eq!(
+            Limits::for_version(&Config::default(), "8.5"),
+            Limits::default()
+        );
+    }
+
+    #[test]
+    fn reads_php_ini_sizes() {
+        assert_eq!(ini_size_mb("512M"), Some(512));
+        assert_eq!(ini_size_mb("1G"), Some(1024));
+        assert_eq!(ini_size_mb("2048k"), Some(2));
+        assert_eq!(ini_size_mb("134217728"), Some(128));
+        assert_eq!(ini_size_mb("-1"), Some(-1));
+        assert_eq!(ini_size_mb("\"256M\""), Some(256));
+        assert_eq!(ini_size_mb("lots"), None);
+        assert_eq!(ini_size_mb(""), None);
     }
 
     #[test]

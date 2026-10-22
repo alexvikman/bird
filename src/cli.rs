@@ -146,6 +146,20 @@ enum Command {
     /// Remove a PHP version
     #[command(name = "php:remove")]
     PhpRemove { version: String },
+    /// Show or set PHP's memory limit and upload size, e.g.
+    /// `bird php:limits --memory 1024 --upload 64` (MB; `default` leaves it to php.ini)
+    #[command(name = "php:limits")]
+    PhpLimits {
+        /// memory_limit in MB, -1 for no limit, or `default`
+        #[arg(long, allow_hyphen_values = true)]
+        memory: Option<String>,
+        /// upload_max_filesize and post_max_size in MB, or `default`
+        #[arg(long)]
+        upload: Option<String>,
+        /// Set --memory for this PHP version only
+        #[arg(long)]
+        php: Option<String>,
+    },
     /// Print (or --edit) the php.ini of a PHP version
     Ini {
         version: Option<String>,
@@ -312,6 +326,11 @@ pub fn main() -> Result<()> {
         Command::PhpList { available } => php_list(available),
         Command::PhpUpdate { versions } => php_update(&versions),
         Command::PhpRemove { version } => php_remove(&version),
+        Command::PhpLimits {
+            memory,
+            upload,
+            php,
+        } => php_limits(memory.as_deref(), upload.as_deref(), php.as_deref()),
         Command::Ini { version, edit } => ini(version, edit),
         Command::Php { args } => shim::exec_php(&shim::current_version()?, args),
         Command::Composer { args } => shim::exec_composer(&shim::current_version()?, args),
@@ -607,11 +626,17 @@ fn state(available: bool) -> Result<()> {
                 .as_ref()
                 .and_then(|r| r.as_ref().ok())
                 .and_then(|r| r.get(&i.minor));
+            let (memory_mb, upload_mb) = php::effective_limits(&cfg, &i.minor);
             json!({
                 "minor": i.minor,
                 "version": i.version,
                 "source": i.source,
                 "xdebug": php::has_xdebug(&i.minor),
+                // What it runs with (Bird's setting, else php.ini), in MB.
+                "memory_mb": memory_mb,
+                "upload_mb": upload_mb,
+                // Set for this version alone (`bird php:limits --php`).
+                "memory_mb_override": cfg.php_memory_mb_by_version.get(&i.minor),
                 "update": latest.filter(|l| i.outdated(l, source)).map(|l| l.version.clone()),
             })
         })
@@ -643,6 +668,9 @@ fn state(available: bool) -> Result<()> {
             XdebugMode::Off => "off",
         },
         "php_versions": versions,
+        // Bird's settings (`bird php:limits`); null leaves them to php.ini.
+        "php_memory_mb": cfg.php_memory_mb,
+        "php_upload_mb": cfg.php_upload_mb,
         "php_available": php_available,
         "php_available_error": available_error,
         "paths": cfg.paths,
@@ -830,7 +858,7 @@ fn opcache(state: Option<&str>) -> Result<()> {
         cfg.opcache = state == "on";
         cfg.save()?;
         for i in php::installed() {
-            php::write_managed_ini(&i.minor, cfg.opcache)?;
+            php::write_managed_ini(&i.minor, &cfg)?;
         }
         if control::is_running() {
             control::send(json!({"cmd": "restart-php"}))?;
@@ -1082,6 +1110,84 @@ fn php_remove(version: &str) -> Result<()> {
     }
     shim::refresh()?;
     ui::ok(format!("removed PHP {version}"));
+    Ok(())
+}
+
+/// `None` for `default` (leave it to php.ini), else a size in MB.
+fn parse_mb(value: &str, what: &str, allow_unlimited: bool) -> Result<Option<i64>> {
+    if value == "default" {
+        return Ok(None);
+    }
+    match value.trim().trim_end_matches(['M', 'm']).parse::<i64>() {
+        Ok(-1) if allow_unlimited => Ok(Some(-1)),
+        Ok(mb) if mb >= 1 => Ok(Some(mb)),
+        _ => bail!(
+            "{what} must be a size in MB{}, or `default`",
+            if allow_unlimited {
+                ", -1 for no limit"
+            } else {
+                ""
+            }
+        ),
+    }
+}
+
+fn php_limits(memory: Option<&str>, upload: Option<&str>, version: Option<&str>) -> Result<()> {
+    let mut cfg = Config::load()?;
+    let version = version.map(php::require_normalized).transpose()?;
+    if version.is_some() && memory.is_none() {
+        bail!("--php sets the memory limit of one version; pass --memory too");
+    }
+    if let Some(memory) = memory {
+        let mb = parse_mb(memory, "--memory", true)?;
+        match (&version, mb) {
+            (Some(v), Some(mb)) => {
+                cfg.php_memory_mb_by_version.insert(v.clone(), mb);
+            }
+            (Some(v), None) => {
+                cfg.php_memory_mb_by_version.remove(v);
+            }
+            (None, mb) => cfg.php_memory_mb = mb,
+        }
+    }
+    if let Some(upload) = upload {
+        cfg.php_upload_mb = parse_mb(upload, "--upload", false)?.map(|mb| mb as u64);
+    }
+    if memory.is_some() || upload.is_some() {
+        cfg.save()?;
+        for i in php::installed() {
+            php::write_managed_ini(&i.minor, &cfg)?;
+        }
+        if control::is_running() {
+            control::send(json!({"cmd": "restart-php"}))?;
+        }
+    }
+    let mb = |v: Option<i64>| match v {
+        Some(-1) => "no limit".to_string(),
+        Some(mb) => format!("{mb} MB"),
+        None => dim("–"),
+    };
+    let rows: Vec<Vec<String>> = php::installed()
+        .iter()
+        .map(|i| {
+            let (memory, upload) = php::effective_limits(&cfg, &i.minor);
+            let from = |set: bool| if set { "" } else { " (php.ini)" };
+            vec![
+                i.minor.clone(),
+                format!(
+                    "{}{}",
+                    mb(memory),
+                    dim(from(cfg.php_memory_mb_for(&i.minor).is_some()))
+                ),
+                format!("{}{}", mb(upload), dim(from(cfg.php_upload_mb.is_some()))),
+            ]
+        })
+        .collect();
+    if rows.is_empty() {
+        println!("No PHP versions installed.");
+    } else {
+        ui::table(&["PHP", "MEMORY LIMIT", "UPLOAD SIZE"], &rows);
+    }
     Ok(())
 }
 
