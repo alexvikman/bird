@@ -47,6 +47,9 @@ pub struct Config {
     /// memory_limit for single PHP versions, over `php_memory_mb`.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub php_memory_mb_by_version: BTreeMap<String, i64>,
+    /// Upload size for single PHP versions, over `php_upload_mb`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub php_upload_mb_by_version: BTreeMap<String, u64>,
     /// Linked sites and per-site settings for parked sites, keyed by site name.
     pub sites: BTreeMap<String, SiteConfig>,
     /// Reverse proxies, keyed by site name.
@@ -107,6 +110,7 @@ impl Default for Config {
             php_upload_mb: None,
             php_memory_mb: None,
             php_memory_mb_by_version: BTreeMap::new(),
+            php_upload_mb_by_version: BTreeMap::new(),
             paths: Vec::new(),
             sites: BTreeMap::new(),
             proxies: BTreeMap::new(),
@@ -163,6 +167,14 @@ impl Config {
             .get(minor)
             .copied()
             .or(self.php_memory_mb)
+    }
+
+    /// The upload size Bird sets for a PHP version, if any.
+    pub fn php_upload_mb_for(&self, minor: &str) -> Option<u64> {
+        self.php_upload_mb_by_version
+            .get(minor)
+            .copied()
+            .or(self.php_upload_mb)
     }
 
     pub fn domain(&self, name: &str) -> String {

@@ -477,7 +477,7 @@ impl Limits {
     pub fn for_version(cfg: &Config, minor: &str) -> Self {
         Self {
             memory_mb: cfg.php_memory_mb_for(minor),
-            upload_mb: cfg.php_upload_mb,
+            upload_mb: cfg.php_upload_mb_for(minor),
         }
     }
 }
@@ -1036,7 +1036,9 @@ Jek2xLuMGjKUUEIcBnDbxJe3uqtkULsQ4=
             ..Config::default()
         };
         cfg.php_memory_mb_by_version.insert("8.3".into(), 2048);
+        cfg.php_upload_mb_by_version.insert("8.3".into(), 256);
         assert_eq!(Limits::for_version(&cfg, "8.3").memory_mb, Some(2048));
+        assert_eq!(Limits::for_version(&cfg, "8.3").upload_mb, Some(256));
         assert_eq!(Limits::for_version(&cfg, "8.5").memory_mb, Some(512));
         assert_eq!(Limits::for_version(&cfg, "8.5").upload_mb, Some(64));
         assert_eq!(

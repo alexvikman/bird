@@ -156,7 +156,7 @@ enum Command {
         /// upload_max_filesize and post_max_size in MB, or `default`
         #[arg(long)]
         upload: Option<String>,
-        /// Set --memory for this PHP version only
+        /// Set --memory and --upload for this PHP version only
         #[arg(long)]
         php: Option<String>,
     },
@@ -637,6 +637,7 @@ fn state(available: bool) -> Result<()> {
                 "upload_mb": upload_mb,
                 // Set for this version alone (`bird php:limits --php`).
                 "memory_mb_override": cfg.php_memory_mb_by_version.get(&i.minor),
+                "upload_mb_override": cfg.php_upload_mb_by_version.get(&i.minor),
                 "update": latest.filter(|l| i.outdated(l, source)).map(|l| l.version.clone()),
             })
         })
@@ -1135,8 +1136,8 @@ fn parse_mb(value: &str, what: &str, allow_unlimited: bool) -> Result<Option<i64
 fn php_limits(memory: Option<&str>, upload: Option<&str>, version: Option<&str>) -> Result<()> {
     let mut cfg = Config::load()?;
     let version = version.map(php::require_normalized).transpose()?;
-    if version.is_some() && memory.is_none() {
-        bail!("--php sets the memory limit of one version; pass --memory too");
+    if version.is_some() && memory.is_none() && upload.is_none() {
+        bail!("--php sets the limits of one version; pass --memory or --upload too");
     }
     if let Some(memory) = memory {
         let mb = parse_mb(memory, "--memory", true)?;
@@ -1151,7 +1152,16 @@ fn php_limits(memory: Option<&str>, upload: Option<&str>, version: Option<&str>)
         }
     }
     if let Some(upload) = upload {
-        cfg.php_upload_mb = parse_mb(upload, "--upload", false)?.map(|mb| mb as u64);
+        let mb = parse_mb(upload, "--upload", false)?.map(|mb| mb as u64);
+        match (&version, mb) {
+            (Some(v), Some(mb)) => {
+                cfg.php_upload_mb_by_version.insert(v.clone(), mb);
+            }
+            (Some(v), None) => {
+                cfg.php_upload_mb_by_version.remove(v);
+            }
+            (None, mb) => cfg.php_upload_mb = mb,
+        }
     }
     if memory.is_some() || upload.is_some() {
         cfg.save()?;
@@ -1179,7 +1189,11 @@ fn php_limits(memory: Option<&str>, upload: Option<&str>, version: Option<&str>)
                     mb(memory),
                     dim(from(cfg.php_memory_mb_for(&i.minor).is_some()))
                 ),
-                format!("{}{}", mb(upload), dim(from(cfg.php_upload_mb.is_some()))),
+                format!(
+                    "{}{}",
+                    mb(upload),
+                    dim(from(cfg.php_upload_mb_for(&i.minor).is_some()))
+                ),
             ]
         })
         .collect();
