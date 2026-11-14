@@ -1,8 +1,9 @@
 # Publishes a Bird release when a version tag (v0.2.0) is pushed: the bird
 # binary for macOS (arm64, x86_64) and Linux (x86_64, arm64, static musl),
-# Bird.app for macOS, SHA256SUMS signed with Bird's release key
-# (SHA256SUMS.sig, checked by `bird self-update`), and GitHub build
-# provenance attestations (`gh attestation verify <file> -R alexvikman/bird`).
+# Bird.app for macOS, the release notes (RELEASE_NOTES.md), SHA256SUMS signed
+# with Bird's release key (SHA256SUMS.sig, checked by `bird self-update`), and
+# GitHub build provenance attestations
+# (`gh attestation verify <file> -R alexvikman/bird`).
 # `bird self-update` installs from here.
 #
 # Hardening: only people who can push tags can start it, the token is
@@ -132,6 +133,24 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      # Before the checksums, as a file of the release: Bird.app shows these
+      # notes, and only trusts them through the signed SHA256SUMS. The text
+      # on the release page itself can be edited without the signing key.
+      - name: Release notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          prev="$(git describe --tags --abbrev=0 --match 'v*' "$TAG^" 2>/dev/null || true)"
+          {
+            echo "## Changes"
+            echo
+            git log --no-merges --format='- %s' "${prev:+$prev..}$TAG" | grep -v '^- Release [0-9]' || true
+            echo
+            echo "Install or update with \`bird self-update\`. Every file is listed in \`SHA256SUMS\`, which is"
+            echo "signed with Bird's release key (\`SHA256SUMS.sig\`); build provenance can be checked with"
+            echo "\`gh attestation verify <file> -R ${GITHUB_REPOSITORY}\`."
+          } > dist/RELEASE_NOTES.md
+          cat dist/RELEASE_NOTES.md
       - name: Checksums
         working-directory: dist
         run: |
@@ -160,25 +179,10 @@ jobs:
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-checksums: dist/SHA256SUMS
-      - name: Release notes
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          prev="$(git describe --tags --abbrev=0 --match 'v*' "$TAG^" 2>/dev/null || true)"
-          {
-            echo "## Changes"
-            echo
-            git log --no-merges --format='- %s' "${prev:+$prev..}$TAG" | grep -v '^- Release [0-9]' || true
-            echo
-            echo "Install or update with \`bird self-update\`. Every file is listed in \`SHA256SUMS\`, which is"
-            echo "signed with Bird's release key (\`SHA256SUMS.sig\`); build provenance can be checked with"
-            echo "\`gh attestation verify <file> -R ${GITHUB_REPOSITORY}\`."
-          } > "$RUNNER_TEMP/notes.md"
-          cat "$RUNNER_TEMP/notes.md"
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$TAG" dist/* --verify-tag --latest --title "Bird $TAG" --notes-file "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" dist/* --verify-tag --latest --title "Bird $TAG" --notes-file dist/RELEASE_NOTES.md

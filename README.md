@@ -164,7 +164,9 @@ signature matches a public key compiled into the running binary
 (`RELEASE_KEYS` in `src/signing.rs`) and whose files match `SHA256SUMS`. The
 private key is a secret of the `release` environment, which needs the owner's
 approval, so pushing a tag or editing a release can't produce an update Bird
-accepts. The release key is
+accepts. The release notes Bird.app shows before an update are the release's
+`RELEASE_NOTES.md`, which `SHA256SUMS` lists; the text on the release page,
+which can be edited without the key, is never shown. The release key is
 
 ```text
 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAII5iuep2RhMNGoxLgz+sc8qaXQ9as6/ZcDCzVpJPXVyn bird-release

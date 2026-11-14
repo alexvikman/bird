@@ -17,18 +17,31 @@ use crate::{control, install, php, ui};
 const REPO: &str = "alexvikman/bird";
 const TARGET: &str = env!("BIRD_TARGET");
 
+// What GitHub's API says about a release is not signed. Its notes (`body`)
+// and page link can be changed by anyone who can edit the release, so
+// neither is read: the notes come from a signed asset (`signed_notes`) and
+// the link is built from the version (`release_url`).
 #[derive(Deserialize)]
 struct Release {
     tag_name: String,
-    /// Release notes (Markdown).
-    #[serde(default)]
-    body: Option<String>,
     #[serde(default)]
     draft: bool,
     #[serde(default)]
     prerelease: bool,
-    html_url: String,
     assets: Vec<Asset>,
+}
+
+/// The release notes as an asset, so the signed SHA256SUMS covers them.
+const NOTES_ASSET: &str = "RELEASE_NOTES.md";
+
+/// The archive with the bird binary of `version` for this platform.
+fn binary_archive(version: &str) -> String {
+    format!("bird-{version}-{TARGET}.tar.gz")
+}
+
+/// The page of a release (`version` is digits and dots, see `release_version`).
+fn release_url(version: &str) -> String {
+    format!("https://github.com/{REPO}/releases/tag/v{version}")
 }
 
 #[derive(Deserialize)]
@@ -110,6 +123,55 @@ fn download_checked(release: &Release, sums: &str, name: &str, label: &str) -> R
     Ok(bytes)
 }
 
+/// SHA256SUMS of a release, once its signature checks out against a key
+/// compiled into Bird; the checksums then vouch for every file they list.
+fn verified_sums(release: &Release) -> Result<String> {
+    let sums_asset = release
+        .asset("SHA256SUMS")
+        .context("the release has no SHA256SUMS")?;
+    let sig_asset = release
+        .asset("SHA256SUMS.sig")
+        .context("the release is not signed (no SHA256SUMS.sig)")?;
+    // Both are small text files, read before anything vouches for them.
+    let fetch = |asset: &Asset| -> Result<String> {
+        let bytes = php::fetch(&php::http()?, &asset.browser_download_url, 1 << 20)
+            .with_context(|| format!("could not download {}", asset.name))?;
+        String::from_utf8(bytes).with_context(|| format!("{} is not text", asset.name))
+    };
+    let sums = fetch(sums_asset)?;
+    let sig = fetch(sig_asset)?;
+    crate::signing::verify(
+        sums.as_bytes(),
+        &sig,
+        crate::signing::NAMESPACE,
+        crate::signing::RELEASE_KEYS,
+    )
+    .context("the release signature is not valid")?;
+    Ok(sums)
+}
+
+/// The notes of release `version`, if the release's signature covers them:
+/// its RELEASE_NOTES.md, listed in the signed SHA256SUMS. `None` for
+/// releases from before the notes were signed, or when anything about them
+/// doesn't check out; the app then shows the update without notes.
+fn signed_notes(release: &Release, version: &str) -> Option<String> {
+    let asset = release.asset(NOTES_ASSET)?;
+    let sums = verified_sums(release).ok()?;
+    let notes = php::fetch(&php::http().ok()?, &asset.browser_download_url, 256 << 10).ok()?;
+    notes_if_signed(&sums, version, &notes)
+}
+
+/// `notes` as text, if `sums` (already verified) are those of `version` and
+/// list this very file. An older release's SHA256SUMS carries a valid
+/// signature too, so the sums must name this version's binary.
+fn notes_if_signed(sums: &str, version: &str, notes: &[u8]) -> Option<String> {
+    checksum_for(sums, &binary_archive(version))?;
+    if checksum_for(sums, NOTES_ASSET)? != sha256_hex(notes) {
+        return None;
+    }
+    String::from_utf8(notes.to_vec()).ok()
+}
+
 /// `bird self-update --check --json`, for the macOS app.
 pub fn check_json() -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
@@ -119,14 +181,19 @@ pub fn check_json() -> Result<()> {
         .and_then(|r| release_version(&r.tag_name))
         .map(str::to_string);
     let available = latest.as_deref().is_some_and(|l| is_newer(l, current));
+    // Only fetched when there is something to show them for.
+    let notes = match (&release, &latest) {
+        (Some(release), Some(latest)) if available => signed_notes(release, latest),
+        _ => None,
+    };
     println!(
         "{}",
         json!({
             "current": current,
             "latest": latest,
             "available": available,
-            "notes": release.as_ref().and_then(|r| r.body.clone()),
-            "url": release.map(|r| r.html_url),
+            "notes": notes,
+            "url": latest.as_deref().map(release_url),
         })
     );
     Ok(())
@@ -150,42 +217,22 @@ pub fn self_update(check_only: bool) -> Result<()> {
     if check_only {
         println!(
             "bird {latest} is available (you have {current}): {}",
-            release.html_url
+            release_url(&latest)
         );
         println!("Install it with `bird self-update`.");
         return Ok(());
     }
 
-    let sums_asset = release
-        .asset("SHA256SUMS")
-        .context("the release has no SHA256SUMS")?;
-    // Both are small text files, read before anything vouches for them.
-    let fetch = |asset: &Asset| -> Result<String> {
-        let bytes = php::fetch(&php::http()?, &asset.browser_download_url, 1 << 20)
-            .with_context(|| format!("could not download {}", asset.name))?;
-        String::from_utf8(bytes).with_context(|| format!("{} is not text", asset.name))
-    };
-    let sums = fetch(sums_asset)?;
     // SHA256SUMS only counts if it carries a signature from a key compiled
     // into Bird; the checksums then vouch for every file below.
-    let sig_asset = release
-        .asset("SHA256SUMS.sig")
-        .context("the release is not signed (no SHA256SUMS.sig); not installing it")?;
-    let sig = fetch(sig_asset)?;
-    crate::signing::verify(
-        sums.as_bytes(),
-        &sig,
-        crate::signing::NAMESPACE,
-        crate::signing::RELEASE_KEYS,
-    )
-    .context("the release signature is not valid; not installing it")?;
+    let sums = verified_sums(&release).context("not installing this release")?;
     ui::ok("release signature verified");
 
     // The bird binary.
     let archive = download_checked(
         &release,
         &sums,
-        &format!("bird-{latest}-{TARGET}.tar.gz"),
+        &binary_archive(&latest),
         &format!("bird {latest}"),
     )?;
     let binary = paths().bird_binary();
@@ -352,6 +399,39 @@ mod tests {
         assert_eq!(
             checksum_for(sums, "bird-0.2.0-x86_64-apple-darwin.tar.gz"),
             None
+        );
+    }
+
+    #[test]
+    fn notes_count_only_when_the_signed_sums_list_them() {
+        let notes = b"## Changes\n\n- Something\n";
+        let version = "0.5.0";
+        let sums = format!(
+            "abc123  {}\n{}  {NOTES_ASSET}\n",
+            binary_archive(version),
+            sha256_hex(notes)
+        );
+        assert_eq!(
+            notes_if_signed(&sums, version, notes).as_deref(),
+            Some("## Changes\n\n- Something\n")
+        );
+        // Edited notes, as someone who can edit the release could upload.
+        assert_eq!(
+            notes_if_signed(&sums, version, b"run this in Terminal"),
+            None
+        );
+        // The (validly signed) sums of another release.
+        assert_eq!(notes_if_signed(&sums, "0.6.0", notes), None);
+        // A release from before the notes were signed.
+        let old = format!("abc123  {}\n", binary_archive(version));
+        assert_eq!(notes_if_signed(&old, version, notes), None);
+    }
+
+    #[test]
+    fn links_to_the_release_page() {
+        assert_eq!(
+            release_url("0.5.0"),
+            "https://github.com/alexvikman/bird/releases/tag/v0.5.0"
         );
     }
 
