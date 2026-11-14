@@ -323,17 +323,19 @@ final class BirdModel: ObservableObject {
         }
     }
 
-    // The service runs as root under launchd, so starting and stopping it
-    // goes through macOS's administrator prompt.
+    // The service is a system launchd job (launchd binds ports 80/443 as
+    // root; the daemon itself runs as the user), so starting and stopping it
+    // goes through macOS's administrator prompt. Only the constants below
+    // ever reach that root shell: never a path, site name or other input.
 
     func startService() {
         // Right after a stop, launchd may still be unloading the job; retry.
         let plist = Self.plist
-        runAsAdmin("launchctl bootstrap system \(plist) || { sleep 1; launchctl bootstrap system \(plist); }")
+        runAsAdmin("/bin/launchctl bootstrap system \(plist) || { sleep 1; /bin/launchctl bootstrap system \(plist); }")
     }
 
     func stopService() {
-        runAsAdmin("launchctl bootout system/\(Self.launchdLabel)")
+        runAsAdmin("/bin/launchctl bootout system/\(Self.launchdLabel)")
     }
 
     private func runAsAdmin(_ shell: String) {
@@ -356,15 +358,26 @@ final class BirdModel: ObservableObject {
 
     // MARK: Opening things
 
+    /// Opens a site or the release page in the browser. Web links only: the
+    /// update link comes from GitHub's API unsigned, and `file:` or an app's
+    /// own scheme has no business here.
     func open(_ url: String) {
-        if let url = URL(string: url) { NSWorkspace.shared.open(url) }
+        guard let url = URL(string: url), let scheme = url.scheme?.lowercased(),
+              scheme == "https" || scheme == "http" else { return }
+        NSWorkspace.shared.open(url)
     }
 
+    /// Shows a folder in Finder. Never "opens" it: a project folder named
+    /// `Something.app` is a bundle to macOS, and opening it would run it.
     func reveal(_ path: String) {
-        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
     }
 
     func openInTerminal(_ path: String) {
+        // Terminal runs a file it is handed; only ever hand it a folder.
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return }
         let terminal = URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")
         NSWorkspace.shared.open(
             [URL(fileURLWithPath: path)], withApplicationAt: terminal,
