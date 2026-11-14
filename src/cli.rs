@@ -1271,7 +1271,7 @@ fn set_tld(tld: Option<String>) -> Result<()> {
         return Ok(());
     };
     let tld = tld.trim_start_matches('.').to_ascii_lowercase();
-    if tld.is_empty() || !tld.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+    if !crate::config::is_tld(&tld) {
         bail!("the TLD must be a single label like `test`");
     }
     // Kept to undo the change if the privileged step fails: the daemon picks

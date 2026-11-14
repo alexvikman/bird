@@ -162,14 +162,19 @@ fn trust_store() -> Option<(PathBuf, &'static str)> {
     None
 }
 
-/// Root part of `bird install` on Linux.
-pub fn system_install(user: &str, group: &str, home: &Path) -> Result<()> {
-    let cfg = Config::load()?;
-
+/// Root part of `bird install` on Linux. `ca_pem` is the CA certificate as
+/// `install::system_install` read and checked it.
+pub fn system_install(
+    user: &str,
+    group: &str,
+    home: &Path,
+    cfg: &Config,
+    ca_pem: &str,
+) -> Result<()> {
     // DNS
     if resolved_active() {
         std::fs::create_dir_all("/etc/systemd/resolved.conf.d")?;
-        std::fs::write(RESOLVED_CONF, resolved_conf(&cfg))?;
+        std::fs::write(RESOLVED_CONF, resolved_conf(cfg))?;
         let out = systemctl(&["restart", "systemd-resolved"])?;
         if !out.status.success() {
             bail!(
@@ -212,7 +217,9 @@ pub fn system_install(user: &str, group: &str, home: &Path) -> Result<()> {
     // CA in the system store (curl, PHP, most CLI tools).
     match trust_store() {
         Some((path, update)) => {
-            std::fs::copy(paths().ca_cert(), &path)?;
+            // The checked bytes, not a copy of the file: as root, copying a
+            // path in the user's ~/.bird would follow a link to any file.
+            std::fs::write(&path, ca_pem)?;
             let ok = Command::new(update)
                 .output()
                 .is_ok_and(|o| o.status.success());

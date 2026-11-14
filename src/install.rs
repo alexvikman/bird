@@ -21,6 +21,10 @@ use crate::{control, dns, linux, php, shim, tls};
 pub const LABEL: &str = "dev.bird.daemon";
 const RESOLVER_MARKER: &str = "# Managed by Bird";
 const SYSTEM_KEYCHAIN: &str = "/Library/Keychains/System.keychain";
+// By full path: `bird install` runs these as root, and sudo on macOS keeps the
+// user's PATH, which starts with the user-writable ~/.bird/bin.
+const LAUNCHCTL: &str = "/bin/launchctl";
+const SECURITY: &str = "/usr/bin/security";
 
 fn plist_path() -> PathBuf {
     PathBuf::from(format!("/Library/LaunchDaemons/{LABEL}.plist"))
@@ -253,7 +257,7 @@ fn plist(user: &str, group: &str, home: &Path, cfg: &Config) -> String {
 }
 
 fn launchctl(args: &[&str]) -> std::io::Result<std::process::Output> {
-    Command::new("launchctl").args(args).output()
+    Command::new(LAUNCHCTL).args(args).output()
 }
 
 fn service_loaded() -> bool {
@@ -298,10 +302,27 @@ pub fn system_install(user: &str, group: &str, home: &Path) -> Result<()> {
     if !crate::sys::is_root() {
         bail!("system-install must run as root (use `bird install`)");
     }
-    if cfg!(target_os = "linux") {
-        return linux::system_install(user, group, home);
+    // These end up in the launchd plist or the systemd unit, one per line.
+    for (what, value) in [
+        ("--user", user.to_string()),
+        ("--group", group.to_string()),
+        ("--home", home.display().to_string()),
+        ("BIRD_HOME", paths().home.display().to_string()),
+    ] {
+        if value.is_empty() || value.chars().any(char::is_control) {
+            bail!("{what} is empty or has control characters");
+        }
     }
     let cfg = Config::load()?;
+    // Everything below runs as root on files in the user's ~/.bird. The CA is
+    // read once and checked before anything changes; what gets trusted is a
+    // private copy of exactly those bytes, not whatever the path holds later.
+    let ca_pem = std::fs::read_to_string(paths().ca_cert())
+        .context("could not read the CA certificate; run `bird install`")?;
+    let ca_name = tls::check_ca_for_trust(&ca_pem, &cfg.tld)?;
+    if cfg!(target_os = "linux") {
+        return linux::system_install(user, group, home, &cfg, &ca_pem);
+    }
 
     // DNS: /etc/resolver/<tld> → Bird's DNS server on an unprivileged port.
     std::fs::create_dir_all("/etc/resolver")?;
@@ -340,12 +361,13 @@ pub fn system_install(user: &str, group: &str, home: &Path) -> Result<()> {
     ui::ok(format!("started launchd service {LABEL}"));
 
     // Trust the CA for TLS in the system keychain (macOS may ask for confirmation).
-    let ca = paths().ca_cert();
-    if ca_trusted() {
+    let checked = PrivateTempDir::new()?;
+    let ca = checked.write("ca.pem", ca_pem.as_bytes())?;
+    if ca_trusted(&ca) {
         ui::ok("certificate authority already trusted");
     } else {
         println!("Trusting Bird's certificate authority (macOS may ask you to confirm)…");
-        let status = Command::new("security")
+        let status = Command::new(SECURITY)
             .args([
                 "add-trusted-cert",
                 "-d",
@@ -363,10 +385,8 @@ pub fn system_install(user: &str, group: &str, home: &Path) -> Result<()> {
         }
     }
     // Drop CAs from earlier installs (other TLD, or made before name constraints).
-    if let Ok(pem) = std::fs::read_to_string(&ca)
-        && let (Some(cn), Some(current)) = (tls::common_name(&pem), tls::sha1_fingerprint(&pem))
-    {
-        let removed = remove_cas(&cn, Some(&current));
+    if let Some(current) = tls::sha1_fingerprint(&ca_pem) {
+        let removed = remove_cas(&ca_name, Some(&current));
         if removed > 0 {
             ui::ok(format!(
                 "removed {removed} old certificate authorit{} from the system keychain",
@@ -418,7 +438,7 @@ impl Drop for PrivateTempDir {
 /// Removes trust settings and keychain entries for this user's Bird CAs,
 /// except the one with fingerprint `keep`. Returns how many were removed.
 fn remove_cas(common_name: &str, keep: Option<&str>) -> usize {
-    let Ok(out) = Command::new("security")
+    let Ok(out) = Command::new(SECURITY)
         .args([
             "find-certificate",
             "-a",
@@ -455,12 +475,12 @@ fn remove_cas(common_name: &str, keep: Option<&str>) -> usize {
             Ok((dir, file))
         });
         if let Ok((_dir, file)) = written {
-            let _ = Command::new("security")
+            let _ = Command::new(SECURITY)
                 .args(["remove-trusted-cert", "-d"])
                 .arg(&file)
                 .output();
         }
-        let deleted = Command::new("security")
+        let deleted = Command::new(SECURITY)
             .args(["delete-certificate", "-Z", &fingerprint, SYSTEM_KEYCHAIN])
             .output()
             .is_ok_and(|o| o.status.success());
@@ -471,10 +491,10 @@ fn remove_cas(common_name: &str, keep: Option<&str>) -> usize {
     removed
 }
 
-fn ca_trusted() -> bool {
-    Command::new("security")
+fn ca_trusted(ca: &Path) -> bool {
+    Command::new(SECURITY)
         .args(["verify-cert", "-p", "ssl", "-c"])
-        .arg(paths().ca_cert())
+        .arg(ca)
         .output()
         .is_ok_and(|o| o.status.success())
 }
@@ -540,17 +560,27 @@ pub fn system_uninstall(ca_name: Option<&str>) -> Result<()> {
             }
         }
     }
-    let ca = paths().ca_cert();
-    if ca.exists() {
-        let _ = Command::new("security")
+    // As root, only ever touch certificates Bird made: the file and the name
+    // both come from the user's side.
+    let ours = |name: &str| name.starts_with(tls::CA_NAME_PREFIX);
+    if let Ok(pem) = std::fs::read_to_string(paths().ca_cert())
+        && tls::common_name(&pem).is_some_and(|name| ours(&name))
+        && let Ok(dir) = PrivateTempDir::new()
+        && let Ok(ca) = dir.write("ca.pem", pem.as_bytes())
+    {
+        let _ = Command::new(SECURITY)
             .args(["remove-trusted-cert", "-d"])
             .arg(&ca)
             .status();
     }
-    if let Some(name) = ca_name
-        && remove_cas(name, None) > 0
-    {
-        ui::ok("removed the certificate authority from the system keychain");
+    match ca_name {
+        Some(name) if !ours(name) => ui::warn(format!(
+            "not removing {name:?} from the system keychain: it is not one of Bird's certificate authorities"
+        )),
+        Some(name) if remove_cas(name, None) > 0 => {
+            ui::ok("removed the certificate authority from the system keychain");
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -576,7 +606,7 @@ pub fn start() -> Result<()> {
             std::thread::sleep(Duration::from_secs(1));
         }
         let _ = Command::new("sudo")
-            .args(["launchctl", "bootstrap", "system"])
+            .args([LAUNCHCTL, "bootstrap", "system"])
             .arg(plist_path())
             .status()?;
     }
@@ -618,7 +648,7 @@ pub fn stop() -> Result<()> {
         return linux::stop();
     }
     let status = Command::new("sudo")
-        .args(["launchctl", "bootout", &format!("system/{LABEL}")])
+        .args([LAUNCHCTL, "bootout", &format!("system/{LABEL}")])
         .status()?;
     if !status.success() {
         bail!("could not stop the service (is it running?)");
@@ -761,7 +791,7 @@ pub fn doctor() -> Result<()> {
     let trusted = if cfg!(target_os = "linux") {
         linux::ca_trusted()
     } else {
-        ca_trusted()
+        ca_trusted(&paths().ca_cert())
     };
     check(
         paths().ca_cert().exists() && trusted,

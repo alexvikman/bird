@@ -158,6 +158,27 @@ pub fn ca_tld(pem: &str) -> Option<String> {
     }
 }
 
+/// Checks that `pem` is a CA Bird made for `tld` before it is trusted
+/// system-wide, and returns its common name. `bird install` trusts the CA as
+/// root from a file in the user's `~/.bird`: whatever sits there must be a CA
+/// that can only vouch for `*.<tld>`, never one for every domain.
+pub fn check_ca_for_trust(pem: &str, tld: &str) -> Result<String> {
+    let der = parse_pem(pem).context("the CA certificate is not a PEM certificate")?;
+    let (_, cert) =
+        x509_parser::parse_x509_certificate(&der).context("the CA certificate is not valid")?;
+    if !cert.is_ca() {
+        anyhow::bail!("the CA certificate is not a certificate authority");
+    }
+    if ca_tld(pem).as_deref() != Some(tld) {
+        anyhow::bail!("the CA certificate is not limited to *.{tld}; run `bird install` again");
+    }
+    let name = common_name(pem).context("the CA certificate has no common name")?;
+    if !name.starts_with(CA_NAME_PREFIX) {
+        anyhow::bail!("the CA certificate ({name:?}) was not made by Bird");
+    }
+    Ok(name)
+}
+
 fn installed_ca_tld() -> Option<String> {
     ca_tld(&std::fs::read_to_string(paths().ca_cert()).ok()?)
 }
@@ -334,6 +355,30 @@ mod tests {
             verify(&cert_pem, leaf.der(), "127.0.0.1").is_err(),
             "IP certs must be rejected"
         );
+    }
+
+    #[test]
+    fn only_birds_own_constrained_ca_is_trusted() {
+        let (cert_pem, key_pem) = generate_ca("test").unwrap();
+        let name = check_ca_for_trust(&cert_pem, "test").unwrap();
+        assert!(name.starts_with(CA_NAME_PREFIX));
+        // A CA for another TLD (config.toml says `test`).
+        assert!(check_ca_for_trust(&generate_ca("com").unwrap().0, "test").is_err());
+
+        // An unconstrained CA, as someone else could put in ~/.bird/ca.
+        let mut params = CertificateParams::default();
+        let mut dn = DistinguishedName::new();
+        dn.push(DnType::CommonName, format!("{CA_NAME_PREFIX} (x)"));
+        params.distinguished_name = dn;
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let unconstrained = params.self_signed(&KeyPair::generate().unwrap()).unwrap();
+        assert!(check_ca_for_trust(&unconstrained.pem(), "test").is_err());
+
+        // A leaf signed by the real CA is not a CA; garbage is nothing.
+        let ca = Ca::from_pem(&cert_pem, &key_pem).unwrap();
+        let (leaf, _) = ca.sign_leaf(&["app.test"]).unwrap();
+        assert!(check_ca_for_trust(&leaf.pem(), "test").is_err());
+        assert!(check_ca_for_trust("root:*:0:0::/root:/bin/sh\n", "test").is_err());
     }
 
     #[test]

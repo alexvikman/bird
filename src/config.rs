@@ -94,6 +94,19 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// Whether `tld` is one DNS label in lowercase (`test`, `my-dev`): no dots,
+/// slashes or anything else that would change what a path or a config line
+/// built from it means.
+pub fn is_tld(tld: &str) -> bool {
+    !tld.is_empty()
+        && tld.len() <= 63
+        && !tld.starts_with('-')
+        && !tld.ends_with('-')
+        && tld
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -134,11 +147,28 @@ impl Config {
         // not here.
         match std::fs::read_to_string(path) {
             Ok(text) => {
-                toml::from_str(&text).with_context(|| format!("could not parse {}", path.display()))
+                let cfg: Self = toml::from_str(&text)
+                    .with_context(|| format!("could not parse {}", path.display()))?;
+                cfg.validate()
+                    .with_context(|| format!("{} is not valid", path.display()))?;
+                Ok(cfg)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(e).with_context(|| format!("could not read {}", path.display())),
         }
+    }
+
+    /// The file is hand-editable, and `tld` ends up in file names: the
+    /// certificate files, and (written as root by `bird install`)
+    /// `/etc/resolver/<tld>` and the systemd-resolved drop-in.
+    fn validate(&self) -> Result<()> {
+        if !is_tld(&self.tld) {
+            anyhow::bail!(
+                "tld {:?} must be a single lowercase label like `test` (letters, digits, `-`)",
+                self.tld
+            );
+        }
+        Ok(())
     }
 
     pub fn save(&mut self) -> Result<()> {
@@ -179,5 +209,43 @@ impl Config {
 
     pub fn domain(&self, name: &str) -> String {
         format!("{name}.{}", self.tld)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tld_is_one_plain_label() {
+        for ok in ["test", "dev", "my-dev", "x1"] {
+            assert!(is_tld(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            ".test",
+            "a.b",
+            "Test",
+            "-x",
+            "x-",
+            "../x",
+            "a/b",
+            "te st",
+            "test\nDNS=1.2.3.4",
+        ] {
+            assert!(!is_tld(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_config_whose_tld_is_a_path_is_refused() {
+        let dir = std::env::temp_dir().join(format!("bird-config-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "tld = \"../../Library/LaunchDaemons/x\"\n").unwrap();
+        assert!(Config::load_from(&path).is_err());
+        std::fs::write(&path, "tld = \"dev\"\n").unwrap();
+        assert_eq!(Config::load_from(&path).unwrap().tld, "dev");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
