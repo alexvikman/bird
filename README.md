@@ -194,7 +194,9 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOFCBm+uCYPaByT8wvmM5u+Fw9t0f302T2/bJ1FXGsbp
 Composer is downloaded from getcomposer.org and only installed if its
 signature (`composer.phar.sig`) matches Composer's own release key, which is
 compiled into Bird (`COMPOSER_RELEASE_KEY` in `src/shim.rs`, the "Tags Public
-Key" on [composer.github.io/pubkeys.html](https://composer.github.io/pubkeys.html)).
+Key" on [composer.github.io/pubkeys.html](https://composer.github.io/pubkeys.html)),
+and if the file is not an older Composer than `MIN_COMPOSER` (an old release
+has a valid signature too).
 
 ## Development
 

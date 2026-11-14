@@ -132,6 +132,13 @@ RGv89BPD+2DLnJysngsvVaUCAwEAAQ==
 /// The most a composer.phar may weigh (it is around 3 MB).
 const MAX_COMPOSER: u64 = 64 << 20;
 
+/// The oldest Composer Bird installs: the stable release when this was
+/// written. The list of versions at getcomposer.org is not signed, while
+/// every old release still has a valid signature, so without a floor a
+/// tampered list could hand out an old Composer with known holes. Raise it
+/// now and then; Composer keeps itself current with `composer self-update`.
+const MIN_COMPOSER: &str = "2.11.2";
+
 pub fn install_composer() -> Result<()> {
     eprintln!("Downloading Composer…");
     let bytes = fetch_composer().context("could not download composer.phar")?;
@@ -177,7 +184,38 @@ fn fetch_composer() -> Result<Vec<u8>> {
         serde_json::from_slice(&signature).context("unexpected composer.phar.sig")?;
     verify_composer(&phar, &signature.sha384, COMPOSER_RELEASE_KEY)
         .context("composer.phar is not signed by Composer's release key; not installing it")?;
+    // The signature says Composer made this file, not which release it is.
+    // That comes from the (now trusted) file itself, never from the list.
+    let version = composer_version(&phar)
+        .context("could not tell which Composer version was downloaded; not installing it")?;
+    if !path.contains(&format!("/{version}/")) {
+        bail!("{url} is Composer {version}, not the release it was listed as; not installing it");
+    }
+    if version_key(&version) < version_key(MIN_COMPOSER) {
+        bail!(
+            "getcomposer.org offered Composer {version}, older than {MIN_COMPOSER}; \
+             not installing an outdated Composer"
+        );
+    }
     Ok(phar)
+}
+
+/// The version a composer.phar says it is: `const VERSION = '2.11.2'` in
+/// its Composer.php, there since Composer 1.
+fn composer_version(phar: &[u8]) -> Option<String> {
+    const MARK: &[u8] = b"const VERSION = '";
+    let start = phar.windows(MARK.len()).position(|w| w == MARK)? + MARK.len();
+    let len = phar[start..].iter().take(32).position(|&b| b == b'\'')?;
+    let version = std::str::from_utf8(&phar[start..start + len]).ok()?;
+    let plain = !version.is_empty()
+        && version
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()));
+    plain.then(|| version.to_string())
+}
+
+fn version_key(version: &str) -> Vec<u32> {
+    version.split('.').map(|p| p.parse().unwrap_or(0)).collect()
 }
 
 /// `/download/2.11.2/composer.phar`: a released version's phar, nothing else
@@ -306,6 +344,30 @@ fwIDAQAB
         }
     }
 
+    #[test]
+    fn reads_the_version_out_of_a_phar() {
+        let phar = b"<?php ...class Composer{const VERSION = '2.11.2';const BRANCH_ALIAS...";
+        assert_eq!(composer_version(phar).as_deref(), Some("2.11.2"));
+        assert_eq!(
+            composer_version(b"const VERSION = '1.10.28'").as_deref(),
+            Some("1.10.28")
+        );
+        // Not a release (a snapshot's VERSION is a commit hash or @package_version@).
+        assert_eq!(
+            composer_version(b"const VERSION = '@package_version@';"),
+            None
+        );
+        assert_eq!(composer_version(b"const VERSION = '2.9.0-RC1';"), None);
+        assert_eq!(composer_version(b"const VERSION = '';"), None);
+        assert_eq!(composer_version(b"no version here"), None);
+        assert_eq!(composer_version(b"const VERSION = '2.11.2"), None);
+
+        assert!(version_key("2.2.32") < version_key(MIN_COMPOSER));
+        assert!(version_key("1.10.28") < version_key(MIN_COMPOSER));
+        assert!(version_key("2.11.10") > version_key("2.11.2"));
+        assert!(version_key(MIN_COMPOSER) >= version_key(MIN_COMPOSER));
+    }
+
     /// Against the real getcomposer.org: `cargo test -- --ignored composer`.
     #[test]
     #[ignore = "needs network"]
@@ -314,5 +376,10 @@ fwIDAQAB
         let _ = rustls::crypto::ring::default_provider().install_default();
         let phar = fetch_composer().unwrap();
         assert!(phar.len() > 1 << 20, "a real composer.phar is a few MB");
+        let version = composer_version(&phar).unwrap();
+        assert!(
+            version_key(&version) >= version_key(MIN_COMPOSER),
+            "{version}"
+        );
     }
 }
