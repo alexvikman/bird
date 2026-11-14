@@ -87,7 +87,10 @@ jobs:
       - name: shellcheck
         run: shellcheck php-builds/build.sh app/build.sh
 
-      - name: manifest.py
+      - name: PHP build helpers
         run: |
-          python3 -m py_compile php-builds/manifest.py
+          python3 -m py_compile php-builds/manifest.py php-builds/sources.py
           python3 php-builds/manifest.py recipe
+          # Artifact validation, source pinning and signature checks, against
+          # fixtures (no network).
+          python3 -m unittest discover -s php-builds
