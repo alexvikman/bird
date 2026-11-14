@@ -37,6 +37,20 @@ pub fn user_home() -> PathBuf {
         .expect("HOME is not set")
 }
 
+/// Only a real directory of our own (no link, nobody else's) will do for the
+/// control and php-fpm sockets.
+fn check_owned_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::symlink_metadata(dir)?;
+    if !meta.file_type().is_dir() || meta.uid() != crate::sys::euid() {
+        return Err(std::io::Error::other(format!(
+            "{} is not a directory of your own; remove it and try again",
+            dir.display()
+        )));
+    }
+    Ok(())
+}
+
 impl Paths {
     pub fn config(&self) -> PathBuf {
         self.home.join("config.toml")
@@ -145,9 +159,39 @@ impl Paths {
             std::fs::create_dir_all(dir)?;
         }
         use std::os::unix::fs::PermissionsExt;
-        for private in [self.run(), self.ca_dir()] {
+        // The run directory can be /tmp/bird-<uid> (see `run`), a name anyone
+        // on the machine can create first.
+        if !self.run().starts_with(&self.home) {
+            check_owned_dir(&self.run())?;
+        }
+        // Sockets, the CA key, and logs (requests, PHP errors, Xdebug traces
+        // with their arguments) are for this user only.
+        for private in [self.run(), self.ca_dir(), self.log()] {
             std::fs::set_permissions(private, std::fs::Permissions::from_mode(0o700))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_run_directory_must_be_our_own_real_directory() {
+        let base = std::env::temp_dir().join(format!("bird-paths-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("real")).unwrap();
+        assert!(check_owned_dir(&base.join("real")).is_ok());
+        // A link someone else planted, even one to a directory of ours.
+        std::os::unix::fs::symlink(base.join("real"), base.join("link")).unwrap();
+        assert!(check_owned_dir(&base.join("link")).is_err());
+        std::fs::write(base.join("file"), "").unwrap();
+        assert!(check_owned_dir(&base.join("file")).is_err());
+        // Root's directory is not ours (unless the tests run as root).
+        if !crate::sys::is_root() {
+            assert!(check_owned_dir(std::path::Path::new("/")).is_err());
+        }
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }

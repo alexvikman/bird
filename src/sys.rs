@@ -9,6 +9,12 @@ pub fn is_root() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
+/// The effective user id: who owns the files this process creates.
+pub fn euid() -> u32 {
+    // SAFETY: geteuid takes no arguments, cannot fail and touches no memory.
+    unsafe { libc::geteuid() }
+}
+
 /// The real user id.
 pub fn uid() -> u32 {
     // SAFETY: getuid takes no arguments, cannot fail and touches no memory.

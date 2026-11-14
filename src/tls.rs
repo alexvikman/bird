@@ -254,6 +254,9 @@ impl Ca {
     }
 }
 
+/// Certificates kept in memory, one per hostname seen.
+const MAX_CACHED_CERTS: usize = 2048;
+
 pub struct CertResolver {
     ca: Ca,
     state: Arc<State>,
@@ -286,6 +289,11 @@ impl ResolvesServerCert for CertResolver {
         let mut cache = self.cache.lock().unwrap();
         if let Some(key) = cache.get(&host) {
             return Some(key.clone());
+        }
+        // Any web page can make the browser ask for endless made-up
+        // hostnames; start over rather than keep a certificate for each.
+        if cache.len() >= MAX_CACHED_CERTS {
+            cache.clear();
         }
         match self.ca.issue(&host) {
             Ok(key) => {
