@@ -376,6 +376,30 @@ class MergeTest(unittest.TestCase):
         self.assertIn("schema 2", str(caught.exception))
 
 
+class VersionTest(unittest.TestCase):
+    def test_accepts_a_release_of_the_branch(self):
+        self.assertEqual(manifest.checked_release("8.4", "8.4.27"), "8.4.27")
+        self.assertEqual(manifest.checked_release("8.10", "8.10.0"), "8.10.0")
+
+    def test_rejects_anything_else(self):
+        for version in ("8.5.1", "8.4", "8.4.27-dev", "8.4.27\n", "8.4.27; id", "8.4.27/../x", " 8.4.27", "８.４.２７", "", None, 8.4, ["8.4.27"]):
+            with self.assertRaises(SystemExit, msg=repr(version)):
+                manifest.checked_release("8.4", version)
+
+    def test_latest_release_checks_what_php_net_returns(self):
+        def respond(body):
+            response = mock.MagicMock()
+            response.__enter__.return_value.read.return_value = json.dumps(body).encode()
+            return mock.patch.object(manifest.urllib.request, "urlopen", return_value=response)
+
+        with respond({"version": "8.4.27"}):
+            self.assertEqual(manifest.latest_release("8.4"), "8.4.27")
+        with respond({"version": "8.4.27 $(id)"}), self.assertRaises(SystemExit):
+            manifest.latest_release("8.4")
+        with respond({"error": "Unknown version"}), self.assertRaises(SystemExit):
+            manifest.latest_release("8.4")
+
+
 class MatrixTest(unittest.TestCase):
     def test_skips_builds_published_with_the_current_recipe(self):
         published = [

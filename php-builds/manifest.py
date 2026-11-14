@@ -76,7 +76,17 @@ def latest_release(minor):
         data = json.load(resp)
     if "version" not in data:
         raise SystemExit("php.net has no release for PHP %s" % minor)
-    return data["version"]
+    return checked_release(minor, data["version"])
+
+
+def checked_release(minor, version):
+    """The version php.net names for a branch, if it is one of that branch.
+
+    It becomes part of file names, artifact names and command lines.
+    """
+    if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) or not version.startswith(minor + "."):
+        raise SystemExit("php.net names %r as the latest PHP %s release, which is not a %s.x version" % (version, minor, minor))
+    return version
 
 
 def resolve_versions(spec):

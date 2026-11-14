@@ -144,7 +144,10 @@ out="$(cd "$out" && pwd)"
 if [[ "$version" =~ ^[0-9]+\.[0-9]+$ ]]; then
     full="$(curl -fsSL "https://www.php.net/releases/index.php?json&version=$version" |
         python3 -I -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
-    [ -n "$full" ] || die "could not resolve the latest PHP $version release"
+    # php.net's answer becomes part of paths, file names and command lines.
+    if ! [[ "$full" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || [ "${full%.*}" != "$version" ]; then
+        die "php.net names '$full' as the latest PHP $version release"
+    fi
 elif [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     full="$version"
 else

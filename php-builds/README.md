@@ -281,13 +281,16 @@ The private key is the `BIRD_PHP_SIGNING_KEY` secret of the `php-release`
 environment, which only `main` may use and which requires the owner's
 approval. The publish job:
 
-1. verifies the published `manifest.json` against `manifest.json.sig` before
+1. stops if `main` has moved since the run started (a run can wait for
+   approval for days, and must not publish over newer builds; run the
+   workflow again instead),
+2. verifies the published `manifest.json` against `manifest.json.sig` before
    merging new builds into it (anyone who can edit the release could replace
    it, and its builds are signed again),
-2. validates what each build job uploaded (below) and merges the builds it
+3. validates what each build job uploaded (below) and merges the builds it
    accepts,
-3. signs the merged manifest and checks the signature against `PHP_KEYS`,
-4. uploads the archives, then `manifest.json.sig`, then `manifest.json`.
+4. signs the merged manifest and checks the signature against `PHP_KEYS`,
+5. uploads the archives, then `manifest.json.sig`, then `manifest.json`.
 
 A build job is not trusted with more than its own build. Every job's artifact
 (`php-<version>-<platform>`) is downloaded into its own directory, and
