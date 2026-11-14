@@ -1,0 +1,37 @@
+# OpenPGP keys of PHP's release managers, per PHP branch. A php-src tarball
+# is only built when its signature (php-<version>.tar.xz.asc on php.net)
+# verifies against a key listed here for its branch; build.sh aborts otherwise.
+#
+# The keys themselves are fetched from php.net with the tarball, so they prove
+# nothing: only these fingerprints (of the primary keys) decide. They are the
+# ones on https://www.php.net/gpg-keys.php, checked against the GPG_KEYS of the
+# official Docker images (github.com/docker-library/php) and against the
+# signatures of the releases current at the time.
+#
+# A new PHP branch needs its release managers added here before it builds.
+#
+# Format: <php branch> <fingerprint> [expired-ok]
+#   expired-ok accepts a signature although php.net's keyring gives the key
+#   an expiry date that has passed. A revoked key is never accepted.
+
+8.5 1198C0117593497A5EC5C199286AF1F9897469DC  # Pierrick Charron
+8.5 49D9AF6BC72A80D6691719C8AA23F5BE9C7097D4  # Volker Dusch
+8.5 D95C03BC702BE9515344AE3374E44BC9067701A5  # Daniel Scherzer
+
+8.4 AFD8691FDAEDF03BDF6E460563F15A9B715376CA  # Eric Mann
+8.4 9D7F99A0CB8F05C8A6958D6256A97AF7600A39A6  # Calvin Buckley
+8.4 0616E93D95AF471243E26761770426E17EBBB3DD  # Saki Takamachi
+
+8.3 1198C0117593497A5EC5C199286AF1F9897469DC  # Pierrick Charron
+8.3 AFD8691FDAEDF03BDF6E460563F15A9B715376CA  # Eric Mann
+8.3 C28D937575603EB4ABB725861C0779DC5C0A9DE4  # Jakub Zelenka
+
+8.2 1198C0117593497A5EC5C199286AF1F9897469DC  # Pierrick Charron
+8.2 39B641343D8C104B2B146DC3F9C39DC0B9698544  # Ben Ramsey
+8.2 E60913E4DF209907D8E30D96659A97C9CF2A795A  # Sergey Panteleev
+
+8.1 528995BFEDFBA7191D46839EF9BA0ADA31CBD89E  # Joe Watkins
+8.1 F1F692238FBC1666E5A5CCD4199F9DFEF6FFBAFD  # Patrick Allaert
+# Signed 8.1.34, the last 8.1 release, on 2025-12-16; the copy of the key in
+# php.net's keyring expired on 2025-11-24 and was never replaced there.
+8.1 39B641343D8C104B2B146DC3F9C39DC0B9698544 expired-ok  # Ben Ramsey

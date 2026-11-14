@@ -9,13 +9,19 @@
 #   php-<full>-<platform>.json            -> build metadata, merged by manifest.py
 #
 # Usage: php-builds/build.sh <8.4 | 8.4.26> [--out DIR]
+#        php-builds/build.sh --refresh-lock [--only NAMES] [--add NAMES] [--add-tool NAMES]
+#
+# Every source is pinned (sources.txt, sources.lock.json) and verified before
+# it is built; --refresh-lock moves the lock to the current upstream releases
+# (see README.md, "Sources").
 #
 # Environment:
 #   SPC_VERSION       static-php-cli release to use (default below)
 #   BIRD_BUILD_WORK   work directory for spc, sources and caches
 #                     (default: php-builds/.work)
 #   SPC_PREBUILT=1    let spc download its pre-built static libraries instead
-#                     of compiling them (much faster, but trusts spc's binaries)
+#                     of compiling them (much faster, but trusts spc's binaries:
+#                     such a build is marked unverified and cannot be published)
 #   SPC_DEBUG=1       verbose spc output
 set -euo pipefail
 
@@ -75,18 +81,21 @@ read_list() {
 join_commas() { paste -sd, -; }
 
 version=""
+refresh_lock=""
+refresh_args=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --out) out="$2"; shift 2 ;;
-        -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        # The rest of the command line goes to `sources.py refresh`.
+        --refresh-lock) refresh_lock=1; shift; refresh_args=("$@"); break ;;
+        -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         -*) die "unknown option $1" ;;
         *) [ -z "$version" ] || die "only one version per run"; version="$1"; shift ;;
     esac
 done
-[ -n "$version" ] || die "usage: $0 <php version> [--out DIR]"
-mkdir -p "$out" "$work"
-out="$(cd "$out" && pwd)"   # absolute: we cd into the build tree below
-work="$(cd "$work" && pwd)"
+[ -n "$version" ] || [ -n "$refresh_lock" ] || die "usage: $0 <php version> [--out DIR]"
+mkdir -p "$work"
+work="$(cd "$work" && pwd)" # absolute: we cd into the build tree below
 
 # Oldest glibc the Linux builds run on (Debian 10, Ubuntu 20.04, RHEL 8).
 GLIBC_TARGET="2.28"
@@ -104,6 +113,32 @@ os="${platform%%-*}"
 if [ "$os" = linux ]; then
     export SPC_TARGET="native-native-gnu.$GLIBC_TARGET"
 fi
+
+# --- static-php-cli -----------------------------------------------------------
+spc_dir="$work/spc-$SPC_VERSION-$platform"
+spc="$spc_dir/spc"
+if [ ! -x "$spc" ]; then
+    log "Downloading spc $SPC_VERSION"
+    mkdir -p "$spc_dir"
+    curl -fsSL --retry 3 -o "$spc_dir/spc.tar.gz" \
+        "https://github.com/crazywhalecc/static-php-cli/releases/download/$SPC_VERSION/$spc_asset"
+    expected="$(spc_sha256 "$spc_asset")"
+    [ -n "$expected" ] || { rm -rf "$spc_dir"; die "no pinned sha256 for spc $SPC_VERSION ($spc_asset); add it to build.sh"; }
+    echo "$expected  $spc_dir/spc.tar.gz" | shasum -a 256 -c - >/dev/null ||
+        { rm -rf "$spc_dir"; die "spc $SPC_VERSION ($spc_asset) does not match its pinned sha256"; }
+    tar -xzf "$spc_dir/spc.tar.gz" -C "$spc_dir"
+    rm "$spc_dir/spc.tar.gz"
+    [ -x "$spc" ] || die "spc binary not found in $spc_asset"
+fi
+
+if [ -n "$refresh_lock" ]; then
+    log "Refreshing sources.lock.json"
+    exec python3 -I "$here/sources.py" refresh --spc "$spc" --work "$work/lock" \
+        ${refresh_args[@]+"${refresh_args[@]}"}
+fi
+
+mkdir -p "$out"
+out="$(cd "$out" && pwd)"
 
 # Resolve 8.4 -> latest 8.4.x from php.net.
 if [[ "$version" =~ ^[0-9]+\.[0-9]+$ ]]; then
@@ -137,23 +172,6 @@ all_exts="$static_exts${shared_exts:+,$shared_exts}"
 
 log "PHP $full for $platform with spc $SPC_VERSION"
 
-# --- static-php-cli -----------------------------------------------------------
-spc_dir="$work/spc-$SPC_VERSION-$platform"
-spc="$spc_dir/spc"
-if [ ! -x "$spc" ]; then
-    log "Downloading spc $SPC_VERSION"
-    mkdir -p "$spc_dir"
-    curl -fsSL --retry 3 -o "$spc_dir/spc.tar.gz" \
-        "https://github.com/crazywhalecc/static-php-cli/releases/download/$SPC_VERSION/$spc_asset"
-    expected="$(spc_sha256 "$spc_asset")"
-    [ -n "$expected" ] || { rm -rf "$spc_dir"; die "no pinned sha256 for spc $SPC_VERSION ($spc_asset); add it to build.sh"; }
-    echo "$expected  $spc_dir/spc.tar.gz" | shasum -a 256 -c - >/dev/null ||
-        { rm -rf "$spc_dir"; die "spc $SPC_VERSION ($spc_asset) does not match its pinned sha256"; }
-    tar -xzf "$spc_dir/spc.tar.gz" -C "$spc_dir"
-    rm "$spc_dir/spc.tar.gz"
-    [ -x "$spc" ] || die "spc binary not found in $spc_asset"
-fi
-
 # spc works in the current directory (downloads/, source/, buildroot/), so give
 # every PHP version its own tree.
 build_dir="$work/$platform/$full"
@@ -163,79 +181,80 @@ cd "$build_dir"
 spc_flags=()
 [ "${SPC_DEBUG:-}" = "1" ] && spc_flags+=(--debug)
 
+# spc runs a prebuilt pkg-config and, on Linux, a prebuilt zig as its compiler.
+# `spc doctor` would fetch the newest of each and run it straight away, so get
+# them first and check them against sources.lock.json before anything runs
+# them. zig comes from its locked URL. pkg-config cannot (given a URL, spc
+# 2.8.5 skips the step that puts the binary in place): for it, a new upstream
+# build fails the check until the lock is refreshed.
+log "Installing prebuilt tools"
+spc_arch="${platform#*-}"
+"$spc" install-pkg "pkg-config-$spc_arch-$os" --no-alt ${spc_flags[@]+"${spc_flags[@]}"}
+if [ "$os" = linux ]; then
+    zig="zig-$spc_arch-$os"
+    zig_url="$(python3 -I "$here/sources.py" url "$zig")"
+    "$spc" install-pkg "$zig" -U "$zig:$zig_url" --no-alt ${spc_flags[@]+"${spc_flags[@]}"}
+fi
+python3 -I "$here/sources.py" verify-tools "$build_dir/downloads"
+
 # Checks for (and installs, via Homebrew) autoconf, automake, libtool, bison,
 # re2c and friends.
 log "spc doctor"
 "$spc" doctor --auto-fix
 
 log "Downloading sources"
-download_flags=(--retry=3)
-# The pins that apply to this PHP version, for spc and for verification.
-sources="$build_dir/sources.applied"
-: > "$sources"
-while read -r name url sha cond; do
-    [ -n "$name" ] || continue
-    [ -n "$sha" ] || die "sources.txt: $name has no sha256"
-    applies "$cond" || continue
-    printf '%s %s %s\n' "$name" "$url" "$sha" >> "$sources"
-    download_flags+=(-U "$name:$url")
-done < <(sed -e 's/#.*//' "$here/sources.txt")
-[ "${SPC_PREBUILT:-}" = "1" ] && download_flags+=(--prefer-pre-built)
+# spc takes the newest release of most sources and verifies none. Every
+# archive is therefore pinned to a URL (-U): sources.txt for the versions
+# picked by hand, sources.lock.json for the rest. --no-alt: no silent fall
+# back to spc's mirror.
+download_flags=(--retry=3 --no-alt)
+# php-src too. Left to itself, spc asks php.net (or, if that fails, its own
+# mirror) which version to fetch and puts the answer on a shell command line.
+# What this URL serves is checked against the release managers' signature.
+download_flags+=(-U "php-src:https://www.php.net/distributions/php-$full.tar.xz")
+pin_flags=()
+verify_flags=()
+if [ "${SPC_PREBUILT:-}" = "1" ]; then
+    # Pre-built libraries cannot be pinned: only the hand-picked pins apply,
+    # and the build is marked unverified, which manifest.py refuses to publish.
+    download_flags+=(--prefer-pre-built)
+    pin_flags+=(--hand-pinned-only)
+    verify_flags+=(--allow-unverified)
+fi
 # spc's --retry only becomes curl's --retry, and curl reports a pecl.php.net
 # HTTP 500 as error 56, which it does not treat as transient: one bad response
 # failed the whole build. So retry the whole step, with time for the server to
-# recover. A retry fetches php-src and the -U sources again (spc always
-# re-downloads those) but skips every other source it already has.
+# recover. A retry fetches php-src again, and of the pinned sources only those
+# not already here with the right sha256.
 attempt=1
-until "$spc" download --with-php="$full" --for-extensions="$all_exts" --for-libs="$libs" \
-    --ignore-cache-sources=php-src "${download_flags[@]}" ${spc_flags[@]+"${spc_flags[@]}"}; do
+while :; do
+    pin_args="$(python3 -I "$here/sources.py" download-args "$minor" "$os" \
+        --downloads "$build_dir/downloads" ${pin_flags[@]+"${pin_flags[@]}"})"
+    pins=()
+    while IFS= read -r arg; do
+        [ -z "$arg" ] || pins+=("$arg")
+    done <<<"$pin_args"
+    if "$spc" download --with-php="$full" --for-extensions="$all_exts" --for-libs="$libs" \
+        "${download_flags[@]}" ${pins[@]+"${pins[@]}"} \
+        ${spc_flags[@]+"${spc_flags[@]}"}; then
+        break
+    fi
     [ "$attempt" -lt 3 ] || die "downloading sources failed $attempt times"
     log "Downloading sources failed; retrying in $((attempt * 30))s"
     sleep $((attempt * 30))
     attempt=$((attempt + 1))
 done
 
-# spc does not verify what it downloads. Check what we can before building:
-# php-src against the sha256 php.net publishes, pinned sources against
-# sources.txt. (The libraries spc fetches from their upstreams over HTTPS are
-# trusted as spc configures them.)
+# Nothing is built before all of it is checked: archives and prebuilt tools
+# against their pinned sha256, git sources (which spc clones at the tip of a
+# branch) moved to their locked commit, php-src against the sha256 php.net
+# publishes and the release managers' signature (php-keys.txt). A source
+# that is not pinned at all fails too. What was used is recorded for the
+# build metadata.
 log "Verifying sources"
-release_json="$(curl -fsSL "https://www.php.net/releases/index.php?json&version=$full")"
-python3 -I - "$build_dir/downloads" "$sources" "$release_json" <<'PY'
-import hashlib, json, os, sys
-
-downloads, sources_txt, release_json = sys.argv[1:4]
-lock = json.load(open(os.path.join(downloads, ".lock.json")))
-
-def sha256(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-def check(name, expected):
-    entry = lock.get(name)
-    if not entry or not entry.get("filename"):
-        sys.exit(f"error: {name} was not downloaded as an archive; cannot verify it")
-    path = os.path.join(downloads, entry["filename"])
-    actual = sha256(path)
-    if actual != expected:
-        sys.exit(f"error: {entry['filename']} has sha256 {actual}, expected {expected}")
-    print(f"  ok  {entry['filename']}")
-
-published = {s["filename"]: s["sha256"] for s in json.loads(release_json).get("source", [])}
-php_file = lock.get("php-src", {}).get("filename", "")
-if php_file not in published:
-    sys.exit(f"error: php.net publishes no sha256 for {php_file!r}")
-check("php-src", published[php_file])
-
-for line in open(sources_txt):
-    fields = line.split("#", 1)[0].split()
-    if fields:
-        name, _url, expected = fields
-        check(name, expected)
-PY
+python3 -I "$here/sources.py" checkout "$build_dir/downloads" "$minor" "$os"
+python3 -I "$here/sources.py" verify "$build_dir/downloads" "$full" "$os" \
+    --record "$build_dir/sources.json" ${verify_flags[@]+"${verify_flags[@]}"}
 
 log "Building"
 # PHP 8.4.27 and 8.5.12 ship a stray ext/imap/tests/ (imap moved to PECL in
@@ -254,6 +273,8 @@ build_flags=(--build-cli --build-fpm --with-libs="$libs")
 # zig's compiler-rt lacks the x86 CPU detection libde265's AVX kernels need.
 [ "$platform" = linux-x86_64 ] && build_flags+=(--with-added-patch="$here/libde265-sse-only.php")
 "$spc" build "$static_exts" "${build_flags[@]}" ${spc_flags[@]+"${spc_flags[@]}"}
+# The build must not have fetched or replaced anything after the check.
+python3 -I "$here/sources.py" unchanged "$build_dir/downloads" "$build_dir/sources.json"
 
 php="$build_dir/buildroot/bin/php"
 fpm="$build_dir/buildroot/bin/php-fpm"
@@ -376,10 +397,10 @@ shared_versions="$(
 )"
 recipe="$(python3 -I "$here/manifest.py" recipe)"
 python3 -I - "$out" "$full" "$minor" "$platform" "$SPC_VERSION" "$static_exts" "$shared_versions" \
-    "$build_dir/downloads/.lock.json" "$recipe" <<'PY'
+    "$build_dir/sources.json" "$recipe" <<'PY'
 import hashlib, json, os, sys
 
-out, full, minor, platform, spc_version, static_exts, shared, lock, recipe = sys.argv[1:10]
+out, full, minor, platform, spc_version, static_exts, shared, sources, recipe = sys.argv[1:10]
 
 def entry(name):
     # The archive is renamed after its content (php-8.4.26-cli-macos-aarch64-
@@ -409,8 +430,9 @@ build = {
     "fpm": entry(f"php-{full}-fpm-{platform}.tar.gz"),
     "extensions": static_exts.split(","),
     "shared_extensions": shared_exts,
-    # What spc downloaded, for provenance (source name -> archive name).
-    "sources": {name: src.get("filename") or src.get("dirname") for name, src in sorted(json.load(open(lock)).items())},
+    # Everything that was downloaded for this build, as verified before it:
+    # archives with their sha256, git sources with their commit (sources.py).
+    "sources": json.load(open(sources)),
 }
 with open(os.path.join(out, f"php-{full}-{platform}.json"), "w") as f:
     json.dump(build, f, indent=2)

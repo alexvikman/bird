@@ -18,6 +18,9 @@
 # (Dependabot keeps the pins current). Builds use no Actions cache: spc does
 # not re-check sources it finds already downloaded, and a cache on main can be
 # written by any other workflow run there.
+#
+# What goes into a build is pinned and verified by build.sh before anything is
+# compiled (php-builds/README.md, "Sources").
 name: PHP builds
 
 on:
@@ -32,7 +35,7 @@ on:
         type: string
         default: "macos-aarch64,macos-x86_64,linux-aarch64,linux-x86_64"
       prebuilt-libs:
-        description: Use spc's pre-built static libraries (faster, but trusts spc's binaries)
+        description: Use spc's pre-built static libraries (faster, but unverified; cannot be published)
         type: boolean
         default: false
       only-missing:
@@ -72,11 +75,16 @@ jobs:
           PLATFORMS: ${{ inputs.platforms || 'macos-aarch64,macos-x86_64,linux-aarch64,linux-x86_64' }}
           ONLY_MISSING: ${{ github.event_name == 'schedule' || inputs.only-missing }}
           PUBLISH: ${{ github.event_name == 'schedule' || inputs.publish }}
+          PREBUILT: ${{ inputs.prebuilt-libs }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           if [ "$PUBLISH" = "true" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
             echo "Publishing only runs from main (the php-release environment); this is $GITHUB_REF."
+            exit 1
+          fi
+          if [ "$PUBLISH" = "true" ] && [ "$PREBUILT" = "true" ]; then
+            echo "Builds with spc's pre-built libraries cannot be verified and are never published."
             exit 1
           fi
           skip=()
@@ -111,6 +119,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # build.sh checks php-src's OpenPGP signature with gpgv, which the
+      # Ubuntu runners always have.
+      - name: gpgv
+        if: runner.os == 'macOS'
+        run: command -v gpgv || brew install gnupg
 
       - name: Build
         env:

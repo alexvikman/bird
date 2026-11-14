@@ -1,0 +1,250 @@
+{
+  "sources": {
+    "attr": {
+      "sha256": "39bf67452fa41d0948c2197601053f48b3d78a029389734332a6309a680c6c87",
+      "url": "https://download.savannah.nongnu.org/releases/attr/attr-2.5.2.tar.gz"
+    },
+    "brotli": {
+      "sha256": "98d35d11a78dc453aebb7d10c3748f3f73ff78c8267c0dc697b8631f67bf7e8f",
+      "url": "https://github.com/google/brotli/archive/refs/tags/v1.2.1/brotli-v1.2.1.tar.gz"
+    },
+    "bzip2": {
+      "sha256": "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269",
+      "url": "https://dl.static-php.dev/static-php-cli/deps/bzip2/bzip2-1.0.8.tar.gz"
+    },
+    "curl": {
+      "sha256": "8dadd7d2536a314f982ad05a651b713f426bf7d02cc2c76cffb9796f2218e6c5",
+      "url": "https://github.com/curl/curl/releases/download/curl-8_23_0/curl-8.23.0.tar.xz"
+    },
+    "ext-zip": {
+      "sha256": "9fab1f8653d40249bd433ad2c3ca02431f9a5ab06d50f988c8ec53fc6a846eef",
+      "url": "https://pecl.php.net/get/zip-1.22.8.tgz"
+    },
+    "ext-zstd": {
+      "commit": "2dbc8f408c5ea191351dd6a1c226ef2d3eddd368",
+      "git": "https://github.com/kjdev/php-ext-zstd"
+    },
+    "frankenphp": {
+      "sha256": "c853ae46bfa87a355a8dd3f18e25fb7e986a9fbff4b0ae70139b7fe6662f4a83",
+      "url": "https://github.com/php/frankenphp/archive/refs/tags/v1.13.5/frankenphp-v1.13.5.tar.gz"
+    },
+    "freetype": {
+      "sha256": "87c7f1f8699b91e89f773f7dcfa505b044e1dae67f62a55d4e29c3afdcac4fb8",
+      "url": "https://github.com/freetype/freetype/archive/refs/tags/VER-2-15-0/freetype-VER-2-15-0.tar.gz"
+    },
+    "gettext": {
+      "sha256": "71132a3fb71e68245b8f2ac4e9e97137d3e5c02f415636eb508ae607bc01add7",
+      "url": "https://ftp.gnu.org/pub/gnu/gettext/gettext-1.0.tar.xz"
+    },
+    "gmp": {
+      "sha256": "a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898",
+      "url": "https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz"
+    },
+    "icu": {
+      "sha256": "588e431f77327c39031ffbb8843c0e3bc122c211374485fa87dc5f3faff24061",
+      "url": "https://github.com/unicode-org/icu/releases/download/release-77-1/icu4c-77_1-src.tgz"
+    },
+    "imagemagick": {
+      "sha256": "40b6fefa88fe16ca5a4b3d3db5133eaebfb0157f21f98530bde8aec5dd5b0776",
+      "url": "https://github.com/ImageMagick/ImageMagick/archive/refs/tags/7.1.2-35/ImageMagick-7.1.2-35.tar.gz"
+    },
+    "imap": {
+      "commit": "be0998979923815fab48cd130675967427d56f70",
+      "git": "https://github.com/static-php/imap.git"
+    },
+    "jbig": {
+      "sha256": "de7106b6bfaf495d6865c7dd7ac6ca1381bd12e0d81405ea81e7f2167263d932",
+      "url": "https://dl.static-php.dev/static-php-cli/deps/jbig/jbigkit-2.1.tar.gz"
+    },
+    "krb5": {
+      "sha256": "3243ffbc8ea4d4ac22ddc7dd2a1dc54c57874c40648b60ff97009763554eaf13",
+      "url": "https://web.mit.edu/kerberos/dist/krb5/1.22/krb5-1.22.2.tar.gz"
+    },
+    "ldap": {
+      "sha256": "aad731aa22118ff327b9b4ddfc4b6f18ef9476586205da88a532e90940b523d2",
+      "url": "https://www.openldap.org/software/download/OpenLDAP/openldap-release/openldap-2.7.2.tgz"
+    },
+    "lerc": {
+      "sha256": "28d74992e0bc0f13ecdda1dd9ca3b40b1a87009369b9ec5a599853f6f311fee7",
+      "url": "https://github.com/Esri/lerc/archive/refs/tags/v4.3.0/lerc-v4.3.0.tar.gz"
+    },
+    "libacl": {
+      "sha256": "5f2bdbad629707aa7d85c623f994aa8a1d2dec55a73de5205bac0bf6058a2f7c",
+      "url": "https://download.savannah.nongnu.org/releases/acl/acl-2.3.2.tar.gz"
+    },
+    "libaom": {
+      "commit": "1713dda4ee47faeba50e231c7bc9bd9d55d37e8a",
+      "git": "https://aomedia.googlesource.com/aom"
+    },
+    "libavif": {
+      "sha256": "2b645287340ba5a631d268b551dc2d72bd73ac33335962dd36dcdb6d8366921d",
+      "url": "https://github.com/AOMediaCodec/libavif/archive/refs/tags/v1.4.2/libavif-v1.4.2.tar.gz"
+    },
+    "libcares": {
+      "sha256": "9364b70a12eb59a06830fb488d9357f90100dff0d98b23ea3593a183d43e6f2f",
+      "url": "https://github.com/c-ares/c-ares/releases/download/v1.34.9/c-ares-1.34.9.tar.gz"
+    },
+    "libde265": {
+      "sha256": "554228bd17788c99a7e63b37ab5634722190e6e2bf60c1dcb01cef328e133905",
+      "url": "https://github.com/strukturag/libde265/releases/download/v1.1.3/libde265-1.1.3.tar.gz"
+    },
+    "libedit": {
+      "sha256": "432d5e7ea8b0116dd39f2eca7bc11d0eed77faa6b77ea526ace89907c23ea4a0",
+      "url": "https://thrysoee.dk/editline/libedit-20260512-3.1.tar.gz"
+    },
+    "libffi": {
+      "sha256": "81e879c094cc5ec3186c48510c6385ac6b3e866192e8bc71a35245703757ee40",
+      "url": "https://github.com/libffi/libffi/releases/download/v3.8.1/libffi-3.8.1.tar.gz"
+    },
+    "libheif": {
+      "sha256": "f7483e818503ea6224c8863e4a56ac02c7089021a98472c811c12aa19faf2475",
+      "url": "https://github.com/strukturag/libheif/releases/download/v1.23.7/libheif-1.23.7.tar.gz"
+    },
+    "libiconv": {
+      "sha256": "9a06844846d664d7122161700c10a64480d7c7bcead3091925a785b38c91edab",
+      "url": "https://ftp.gnu.org/gnu/libiconv/libiconv-1.19.1.tar.gz"
+    },
+    "libidn2": {
+      "sha256": "f557911bf6171621e1f72ff35f5b1825bb35b52ed45325dcdee931e5d3c0787a",
+      "url": "https://ftp.gnu.org/gnu/libidn/libidn2-2.3.8.tar.gz"
+    },
+    "libjpeg": {
+      "sha256": "6f5819c51649bce2571a23b1b0cd41eae2f57fc3f8908c7ec9e7047efb65ca13",
+      "url": "https://github.com/libjpeg-turbo/libjpeg-turbo/archive/refs/tags/3.2.1/libjpeg-turbo-3.2.1.tar.gz"
+    },
+    "libjxl": {
+      "commit": "0c65c1906b2043765815b27bf163e26afb11df1f",
+      "git": "https://github.com/libjxl/libjxl"
+    },
+    "liblz4": {
+      "sha256": "683fed08a844ad012196381e40badf80c0bbe4962959761416d41c9e67d77ec7",
+      "url": "https://github.com/lz4/lz4/releases/download/v1.11.1/lz4-1.11.1.tar.gz"
+    },
+    "libpng": {
+      "sha256": "2540302a1844ad2b2b501977abecfa850f265f97b78f065a712ab4074a89f5b5",
+      "url": "https://github.com/pnggroup/libpng/archive/refs/tags/v1.6.59/libpng-v1.6.59.tar.gz"
+    },
+    "libsodium": {
+      "sha256": "adbdd8f16149e81ac6078a03aca6fc03b592b89ef7b5ed83841c086191be3349",
+      "url": "https://github.com/jedisct1/libsodium/releases/download/1.0.22-RELEASE/libsodium-1.0.22.tar.gz"
+    },
+    "libssh2": {
+      "sha256": "d9ec76cbe34db98eec3539fe2c899d26b0c837cb3eb466a56b0f109cabf658f7",
+      "url": "https://github.com/libssh2/libssh2/releases/download/libssh2-1.11.1/libssh2-1.11.1.tar.gz"
+    },
+    "libtiff": {
+      "sha256": "4996f0c4f93094719b1ca5c6279b20e588773ba8a247533e486416fb662ddb88",
+      "url": "https://download.osgeo.org/libtiff/tiff-4.7.2.tar.xz"
+    },
+    "libunistring": {
+      "sha256": "5b0ecd46cbf225375f20ab4056197e66a7ac590e2684c069af407ae3383c9d81",
+      "url": "https://ftp.gnu.org/gnu/libunistring/libunistring-1.5.tar.gz"
+    },
+    "libwebp": {
+      "sha256": "93a852c2b3efafee3723efd4636de855b46f9fe1efddd607e1f42f60fc8f2136",
+      "url": "https://github.com/webmproject/libwebp/archive/refs/tags/v1.6.0/libwebp-v1.6.0.tar.gz"
+    },
+    "libxml2": {
+      "sha256": "bb01bd9ac9a7403f9706816fd6d3e7888041d32b0211075feb20e755d2a9f29d",
+      "url": "https://github.com/GNOME/libxml2/archive/refs/tags/v2.15.4/libxml2-v2.15.4.tar.gz"
+    },
+    "libxslt": {
+      "sha256": "9acfe68419c4d06a45c550321b3212762d92f41465062ca4ea19e632ee5d216e",
+      "url": "https://download.gnome.org/sources/libxslt/1.1/libxslt-1.1.45.tar.xz"
+    },
+    "libzip": {
+      "sha256": "c40062022a1963c80573d48f6070792297cecd7c6bffe3aefcac0d8b9bee8913",
+      "url": "https://github.com/nih-at/libzip/releases/download/v1.12.1/libzip-1.12.1.tar.xz"
+    },
+    "micro": {
+      "commit": "fb6d497b6f4cf138ee3851a30c905d64b7b19aed",
+      "git": "https://github.com/static-php/phpmicro"
+    },
+    "msgpack": {
+      "sha256": "e30be355ab79aaea4568692fbd6073fd7c7f50ea8d3cf12edce40fc0c921d868",
+      "url": "https://pecl.php.net/get/msgpack-3.0.1.tgz"
+    },
+    "ncurses": {
+      "sha256": "355b4cbbed880b0381a04c46617b7656e362585d52e9cf84a67e2009b749ff11",
+      "url": "https://ftp.gnu.org/pub/gnu/ncurses/ncurses-6.6.tar.gz"
+    },
+    "nghttp2": {
+      "sha256": "c0f55121d88650e4b9227aec28cebaf664d2417ca60fe70be0f8d38829f52116",
+      "url": "https://github.com/nghttp2/nghttp2/releases/download/v1.71.0/nghttp2-1.71.0.tar.xz"
+    },
+    "nghttp3": {
+      "sha256": "228e17f5cc3d4de7bfced9912bd09de30e7f45741cc47503cf88d3fa9209e155",
+      "url": "https://github.com/ngtcp2/nghttp3/releases/download/v1.19.0/nghttp3-1.19.0.tar.xz"
+    },
+    "ngtcp2": {
+      "sha256": "7804aa0fa1c39942ba322a90805824c37231f7675b08d0c3cc4332858a7b085e",
+      "url": "https://github.com/ngtcp2/ngtcp2/releases/download/v1.26.0/ngtcp2-1.26.0.tar.xz"
+    },
+    "onig": {
+      "sha256": "2a5cfc5ae259e4e97f86b68dfffc152cdaffe94e2060b770cb827238d769fc05",
+      "url": "https://github.com/kkos/oniguruma/releases/download/v6.9.10/onig-6.9.10.tar.gz"
+    },
+    "openssl": {
+      "sha256": "a2157c2830efdec3788939b00c9b0638306d3f0bbb76dc4832ee503bb397df98",
+      "url": "https://github.com/openssl/openssl/releases/download/openssl-3.6.5/openssl-3.6.5.tar.gz"
+    },
+    "postgresql": {
+      "sha256": "45f3415b3de739c02d44e2f753867f20896412ba7856a145e6865dd96a73e2a4",
+      "url": "https://github.com/postgres/postgres/archive/refs/tags/REL_18_7/postgres-REL_18_7.tar.gz"
+    },
+    "qdbm": {
+      "commit": "a56775d9730fbc793d012092270367eb2284da07",
+      "git": "https://github.com/static-php/qdbm.git"
+    },
+    "sqlite": {
+      "sha256": "bc9067442eedf3dd39989b5c5cfbfff37ae66cc9c99274e0c3052dc4d4a8f6ae",
+      "url": "https://www.sqlite.org/2024/sqlite-autoconf-3450200.tar.gz"
+    },
+    "unixodbc": {
+      "sha256": "f210501445ce21bf607ba51ef8c125e10e22dffdffec377646462df5f01915ec",
+      "url": "https://www.unixodbc.org/unixODBC-2.3.12.tar.gz"
+    },
+    "watcher": {
+      "sha256": "190bbe5e19923083db2beb3aa68f4e99a563c8f685d8037b0536780b0116c4d3",
+      "url": "https://github.com/e-dant/watcher/archive/refs/tags/0.14.5/watcher-0.14.5.tar.gz"
+    },
+    "xz": {
+      "sha256": "4ce24038fd4221e0d13bc1a2de7a4db56e90b92b3bf75321f6c14be73f65de4b",
+      "url": "https://github.com/tukaani-project/xz/releases/download/v5.8.4/xz-5.8.4.tar.xz"
+    },
+    "zlib": {
+      "sha256": "02dd159783677a749c04adbdd02b55b8a2bcc7e054f51b76b549199a916ad584",
+      "url": "https://github.com/madler/zlib/releases/download/v1.4/zlib-1.4.tar.gz"
+    },
+    "zstd": {
+      "sha256": "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3",
+      "url": "https://github.com/meta/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz"
+    }
+  },
+  "tools": {
+    "pkg-config-aarch64-linux": {
+      "sha256": "8393329b62c79b9e50df0a8a068a67f1c525493fcd3940ac48e08fe9062ac71a",
+      "url": "https://github.com/static-php/hosted/releases/download/2026.2.17/pkg-config-aarch64-linux-musl-1.2.5.txz"
+    },
+    "pkg-config-aarch64-macos": {
+      "sha256": "7541c2f775e6a535acb47c8bab0a60d4c4c13eb62d09df334b21fecedd71a21e",
+      "url": "https://github.com/static-php/hosted/releases/download/2026.2.17/pkg-config-aarch64-darwin.txz"
+    },
+    "pkg-config-x86_64-linux": {
+      "sha256": "b8e4225d72bb1e96d1b184bbd84ff13668f4b1d6c0594d09d0b10cd65cc0ae32",
+      "url": "https://github.com/static-php/hosted/releases/download/2026.2.17/pkg-config-x86_64-linux-musl-1.2.5.txz"
+    },
+    "pkg-config-x86_64-macos": {
+      "sha256": "06c2f33c89c113226b86fdcd559dfc3f3747b1c5bfc0fffab91a66e803456290",
+      "url": "https://github.com/static-php/hosted/releases/download/2026.2.17/pkg-config-x86_64-darwin.txz"
+    },
+    "zig-aarch64-linux": {
+      "sha256": "a1546d5646eb184437918d6635ca6b762a0e889eac09cef720ee7a1ed3fe7795",
+      "url": "https://ziglang.org/download/0.17.1/zig-aarch64-linux-0.17.1.tar.xz"
+    },
+    "zig-x86_64-linux": {
+      "sha256": "3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a",
+      "url": "https://ziglang.org/download/0.17.1/zig-x86_64-linux-0.17.1.tar.xz"
+    }
+  }
+}

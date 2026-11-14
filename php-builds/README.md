@@ -10,11 +10,15 @@ load Xdebug.
 | `extensions.txt` | Extensions compiled into `php` and `php-fpm` |
 | `shared-extensions.txt` | Extensions built as loadable `.so` files (Xdebug, PCOV) |
 | `libs.txt` | Extra libraries (gd: FreeType, JPEG, WebP; curl: HTTP/2 via nghttp2) |
-| `sources.txt` | Pinned PECL sources with sha256 (otherwise spc takes the newest, even alphas) |
-| `build.sh` | Builds, tests and packages one PHP version on the current Mac |
+| `sources.txt` | Sources pinned by hand: PECL versions with sha256 (otherwise spc takes the newest, even alphas) |
+| `sources.lock.json` | Every other source and prebuilt tool spc downloads: URL and sha256, or git URL and commit (see "Sources") |
+| `php-keys.txt` | Fingerprints of PHP's release managers per branch, for php-src's signature |
+| `sources.py` | Pins, verifies and records what a build downloads; refreshes the lock |
+| `build.sh` | Builds, tests and packages one PHP version on the current machine |
 | `libde265-sse-only.php` | spc patch for linux-x86_64: libde265 without AVX kernels (see "Xdebug") |
 | `manifest.py` | Resolves versions from php.net; merges build metadata into `manifest.json` |
-| `../.github/workflows/php-builds.yml` | Builds PHP 8.1–8.5 × macOS arm64/x86_64 and publishes them |
+| `test_sources.py` | Tests for `sources.py`: `python3 -m unittest discover -s php-builds` |
+| `../.github/workflows/php-builds.yml` | Builds PHP 8.1–8.5 for macOS and Linux (arm64, x86_64) and publishes them |
 
 ## Extensions
 
@@ -42,7 +46,8 @@ php-builds/build.sh 8.4            # latest 8.4.x from php.net
 php-builds/build.sh 8.4.26 --out /tmp/php
 ```
 
-Needs the Xcode command line tools and Homebrew; `spc doctor --auto-fix`
+Needs the Xcode command line tools, Homebrew and `gpgv`
+(`brew install gnupg`, for php-src's signature); `spc doctor --auto-fix`
 installs missing build tools (autoconf, automake, libtool, bison, re2c, …) with
 `brew`. Everything else lives in `php-builds/.work/` (sources, build trees,
 ~4 GB per version; a build takes ~10 minutes on an M-series Mac) and the results in `php-builds/dist/` (both git-ignored).
@@ -51,12 +56,11 @@ installs missing build tools (autoconf, automake, libtool, bison, re2c, …) wit
 | --- | --- | --- |
 | `SPC_VERSION` | `2.8.5` | static-php-cli release |
 | `BIRD_BUILD_WORK` | `php-builds/.work` | Work directory |
-| `SPC_PREBUILT=1` | off | Use spc's pre-built static libraries instead of compiling them. Much faster, but trusts binaries from the spc project. |
+| `SPC_PREBUILT=1` | off | Use spc's pre-built static libraries instead of compiling them. Much faster, but trusts binaries from the spc project that nothing can be pinned to: the build is marked unverified and is never published. |
 | `SPC_DEBUG=1` | off | Verbose spc output |
 
-Before building, `build.sh` verifies the spc binary against a pinned sha256,
-php-src against the sha256 php.net publishes, and the PECL sources against
-`sources.txt`. Before packaging, it checks that:
+Before building, `build.sh` verifies everything it downloaded (see
+"Sources"). Before packaging, it checks that:
 
 - `php -v` reports the requested version,
 - every extension in `extensions.txt` is loaded in both `php` and `php-fpm`,
@@ -64,6 +68,123 @@ php-src against the sha256 php.net publishes, and the PECL sources against
 - the binaries only link against system libraries (`/usr/lib`, `/System`).
 
 Binaries target macOS 12+ (spc's default `MACOSX_DEPLOYMENT_TARGET`).
+
+## Sources
+
+spc verifies nothing it downloads, and for most of the ~65 sources of a build
+it takes whatever is newest that day; a few are git clones of a moving branch,
+and two (pkg-config, zig) are prebuilt programs it runs. So everything is
+pinned in this directory, and `build.sh` refuses to build anything else:
+
+| What | Pinned by | Checked |
+| --- | --- | --- |
+| spc itself | sha256 per platform in `build.sh` | before it runs |
+| php-src | its URL on php.net, `php-keys.txt` | the sha256 php.net publishes, and the release's OpenPGP signature |
+| PECL extensions picked by hand | `sources.txt`: URL, sha256 | sha256 |
+| every other archive | `sources.lock.json`: URL, sha256 | sha256 |
+| git sources (`ext-zstd`, `libaom`, `libjxl`, `imap`, `qdbm`, `micro`) | `sources.lock.json`: URL, commit | checked out at that commit, unmodified |
+| prebuilt tools (`pkg-config-*`, `zig-*`) | `sources.lock.json`: URL, sha256 | sha256, before anything runs them |
+
+How `build.sh` applies them:
+
+1. The prebuilt tools are fetched and checked first, before `spc doctor`
+   (which would otherwise fetch the newest and run them). zig comes from its
+   locked URL. pkg-config is fetched the way spc picks it and then checked:
+   given a URL, spc 2.8.5 skips the step that puts the binary in place. So a
+   new upstream build of pkg-config fails the check until the lock is
+   refreshed.
+2. `spc download` gets a `-U <name>:<url>` for every pinned archive, so it
+   fetches exactly those files, without falling back to spc's mirror
+   (`--no-alt`). That includes php-src: left to itself, spc asks php.net (or
+   its own mirror) for the version to fetch and puts the answer on a shell
+   command line.
+3. spc clones git sources at the tip of their branch; each clone is then
+   emptied and checked out again at its locked commit, so nothing of the
+   tip stays behind.
+4. `sources.py verify` fails the build unless every downloaded source is
+   pinned and matches. A source nobody pinned (a new dependency of an
+   extension, say) fails too, and so does a clone holding any file that is
+   not its commit's, ignored files included.
+5. After `spc build`, `sources.py unchanged` fails the build if anything was
+   fetched, replaced or edited since the check.
+
+What was used is written into the build's metadata, and so into the signed
+`manifest.json` (`sources`): every archive with its sha256, every git source
+with its commit, php-src with the fingerprint that signed it.
+
+**php-src.** The version comes from php.net, which also publishes the
+tarball's sha256, so that sum alone only shows the download was not damaged.
+The release managers sign each tarball (`php-<version>.tar.xz.asc`);
+`php-keys.txt` lists their key fingerprints per PHP branch, and the signature
+must be good and made by a key listed for that branch (`gpgv`). The keys
+themselves are fetched from php.net with the tarball and prove nothing; only
+the committed fingerprints decide. A revoked key is never accepted. A key
+php.net's keyring shows as expired is refused unless its line says
+`expired-ok` (PHP 8.1's last release needs that). A new PHP branch builds only
+after its release managers are added to `php-keys.txt`
+(<https://www.php.net/gpg-keys.php>; compare with another source, such as the
+`GPG_KEYS` of the official Docker images).
+
+**Not covered.** The build tools `spc doctor` installs with Homebrew or apt,
+and the runner image itself, are trusted as they come. `SPC_PREBUILT=1` builds
+use libraries compiled by the spc project and are marked unverified; the
+workflow refuses to publish them. The workflow always builds in an
+empty tree; a local `.work/` tree that is used again keeps the tools and
+libraries an earlier build left there.
+
+### Refreshing the lock
+
+Nothing moves until the lock does: the libraries in a build are those in
+`sources.lock.json`, however often it is rebuilt. To move to the current
+upstream releases:
+
+```bash
+GITHUB_TOKEN=<a token without any access> php-builds/build.sh --refresh-lock
+git diff php-builds/sources.lock.json
+```
+
+`GITHUB_TOKEN` only lifts GitHub's API rate limit (a full refresh makes about
+a hundred requests; sixty an hour are allowed without one), so give it a
+token that can do nothing: a fine-grained token without repository access,
+not `gh auth token`. A refresh is spc's own unpinned resolution, which is
+what the pins protect a build from: spc reads upstream index pages, and puts
+what it finds there on shell command lines. It can run in a container,
+which then only gets to change this directory:
+
+```bash
+docker run --rm -e GITHUB_TOKEN -v "$PWD/php-builds:/php-builds" ubuntu:24.04 sh -c '
+  apt-get update -qq && apt-get install -y -qq curl git python3 ca-certificates xz-utils perl >/dev/null &&
+  BIRD_BUILD_WORK=/tmp/work /php-builds/build.sh --refresh-lock'
+```
+
+A refresh lets spc resolve the newest release of every locked source (the same
+choice it would make without pins), finds out which URL each file came from,
+turns that into one plain `curl` can fetch again (GitHub's API URLs become
+release and tag archive URLs, PECL's "latest" becomes the release it is),
+downloads it and writes URL and sha256 to the lock; git sources get the
+commit at the tip of their branch. It runs on any machine and covers all
+platforms. Read the diff (which versions moved, and from where), try a build,
+and commit it. The lock is part of the recipe, so the next weekly run
+rebuilds every version with it. (spc adds the token to its request for zig's
+release index on ziglang.org; the refresh therefore fetches zig without it.)
+
+```bash
+php-builds/build.sh --refresh-lock --only openssl,curl   # just these
+php-builds/build.sh --refresh-lock --add libfoo          # a source a build reported as not pinned
+php-builds/build.sh --refresh-lock --add-tool zig-x86_64-linux
+```
+
+- A build that stops with "… is not pinned" downloaded a source the lock does
+  not know, usually after adding an extension: add it with `--add`.
+- The versions in `sources.txt` are edited by hand (URL and
+  `shasum -a 256`), and are never touched by a refresh.
+- After changing `SPC_VERSION`, refresh the whole lock: another spc can name
+  or fetch sources differently.
+- Tag archives (`github.com/<owner>/<repo>/archive/…`) are generated by
+  GitHub on request. Should it ever generate them differently, builds stop
+  with a sha256 mismatch although nothing changed upstream; a refresh then
+  shows the same URLs with new sums.
+- Entries no build uses any more are harmless and can be deleted.
 
 ## Xdebug
 
@@ -233,7 +354,12 @@ trusted without a signature.
       "shared_extensions": {
         "xdebug": { "version": "3.5.3", "file": "php-8.4.26-xdebug-macos-aarch64.tar.gz", "sha256": "…", "size": 123456 }
       },
-      "sources": { "php-src": "php-8.4.26.tar.xz", "openssl": "openssl-3.6.5.tar.gz", "…": "…" },
+      "sources": {
+        "php-src": { "file": "php-8.4.26.tar.xz", "sha256": "…", "signed_by": "9D7F99A0CB8F05C8A6958D6256A97AF7600A39A6" },
+        "openssl": { "file": "openssl-3.6.5.tar.gz", "sha256": "…" },
+        "libaom": { "dir": "libaom", "git": "https://aomedia.googlesource.com/aom", "commit": "…" },
+        "…": {}
+      },
       "built_at": "2026-10-16T19:50:00Z"
     }
   ]
@@ -251,7 +377,11 @@ trusted without a signature.
 - `extensions`: what is compiled in, from `extensions.txt` (names as in spc;
   `opcache` shows up as "Zend OPcache" in `php -m`).
 - `shared_extensions`: optional add-ons, keyed by extension name.
-- `sources`: archives spc downloaded, for provenance only.
+- `sources`: everything that was downloaded for the build, as verified
+  before it was built: archives and prebuilt tools with their sha256, git
+  sources with their commit, php-src with the fingerprint of the release
+  manager's key that signed it. For provenance; Bird does not read it.
+  (Builds from before November 2026 only list file names.)
 - `recipe`: id of the build files that made this build (see "Weekly run").
 
 Installing PHP `8.4` on `macos-aarch64`, then, is:
