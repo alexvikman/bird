@@ -32,6 +32,27 @@ pub fn signal(pid: u32, signal: i32) -> std::io::Result<()> {
     }
 }
 
+/// Points stdout and stderr at `path` (appending; created if missing), for a
+/// daemon whose service manager must not open the log itself: systemd opens
+/// `StandardOutput=append:` files as root, and Bird's log is in the user's
+/// ~/.bird. Opened here, a link planted there reaches only what the user
+/// could write anyway.
+pub fn redirect_output(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+        // SAFETY: dup2 takes two file descriptors and touches no memory;
+        // `file` stays open for the call and 1 and 2 are valid targets.
+        if unsafe { libc::dup2(file.as_raw_fd(), fd) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
 /// Raises the soft limit on open files to the hard limit (at most 10240,
 /// the most macOS accepts even when the hard limit is "unlimited").
 pub fn raise_open_files_limit() -> std::io::Result<()> {

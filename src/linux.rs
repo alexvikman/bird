@@ -37,6 +37,22 @@ fn has(cmd: &str) -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
+/// A value for inside double quotes in a unit file. systemd unescapes `\\`
+/// and `\"` there and expands `%` specifiers everywhere.
+fn quoted(value: impl std::fmt::Display) -> String {
+    value
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('%', "%%")
+}
+
+/// Like `quoted`, for an ExecStart argument, where `$` starts a variable.
+/// Not for the program itself: systemd takes its path as written.
+fn quoted_arg(value: impl std::fmt::Display) -> String {
+    quoted(value).replace('$', "$$")
+}
+
 pub fn unit(user: &str, group: &str, home: &Path) -> String {
     let p = paths();
     let path_env = format!(
@@ -55,23 +71,39 @@ pub fn unit(user: &str, group: &str, home: &Path) -> String {
          Environment=\"BIRD_HOME={bird_home}\"\n\
          Environment=\"HOME={home}\"\n\
          Environment=\"PATH={path_env}\"\n\
-         ExecStart=\"{bin}\" daemon\n\
+         # The daemon opens its log itself, as the user. A log file named in\n\
+         # this unit would be opened by systemd as root, in the user's ~/.bird.\n\
+         ExecStart=\"{bin}\" daemon --log-file \"{log}\"\n\
          Restart=always\n\
          RestartSec=1\n\
          # Only what binding 127.0.0.1:80/443 needs; dropped after binding.\n\
          AmbientCapabilities=CAP_NET_BIND_SERVICE\n\
          CapabilityBoundingSet=CAP_NET_BIND_SERVICE\n\
          NoNewPrivileges=true\n\
-         StandardOutput=append:{log}\n\
-         StandardError=append:{log}\n\
          \n\
          [Install]\n\
          WantedBy=multi-user.target\n",
-        bird_home = p.home.display(),
-        home = home.display(),
-        bin = p.bird_binary().display(),
-        log = p.daemon_log().display(),
+        bird_home = quoted(p.home.display()),
+        home = quoted(home.display()),
+        path_env = quoted(&path_env),
+        bin = quoted(p.bird_binary().display()),
+        log = quoted_arg(p.daemon_log().display()),
     )
+}
+
+/// Whether the installed unit is one from an older Bird, which had systemd
+/// (root) open the log file in the user's ~/.bird. `bird install` rewrites it.
+pub fn unit_logs_as_root() -> bool {
+    std::fs::read_to_string(UNIT).is_ok_and(|unit| names_a_log_file(&unit))
+}
+
+fn names_a_log_file(unit: &str) -> bool {
+    unit.lines().map(str::trim_start).any(|line| {
+        ["StandardOutput=", "StandardError="].iter().any(|key| {
+            line.strip_prefix(key)
+                .is_some_and(|to| to.starts_with("append:") || to.starts_with("file:"))
+        })
+    })
 }
 
 pub fn resolved_conf(cfg: &Config) -> String {
@@ -389,7 +421,15 @@ mod tests {
         let u = unit("alex", "alex", Path::new("/home/alex"));
         assert!(u.contains("User=alex"));
         assert!(u.contains("AmbientCapabilities=CAP_NET_BIND_SERVICE"));
-        assert!(u.contains("ExecStart=\"") && u.contains("\" daemon"));
+        assert!(u.contains("ExecStart=\"") && u.contains("\" daemon --log-file \""));
+        // systemd opens StandardOutput=file:/append: targets as root; the log
+        // is in the user's ~/.bird, so the unit must never name it there.
+        assert!(!names_a_log_file(&u));
+        assert!(names_a_log_file(
+            "[Service]\nStandardOutput=append:/home/alex/.bird/log/bird.log\n"
+        ));
+        assert_eq!(quoted("/home/a\"b/50%"), "/home/a\\\"b/50%%");
+        assert_eq!(quoted_arg("/home/$x"), "/home/$$x");
         let cfg = Config::default();
         let r = resolved_conf(&cfg);
         assert!(r.contains("DNS=127.0.0.1:53535"));

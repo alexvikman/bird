@@ -91,7 +91,19 @@ impl State {
     }
 }
 
-pub fn run(http_port: Option<u16>, https_port: Option<u16>) -> Result<()> {
+pub fn run(
+    http_port: Option<u16>,
+    https_port: Option<u16>,
+    log_file: Option<std::path::PathBuf>,
+) -> Result<()> {
+    // Under systemd the daemon writes its own log file (see linux.rs).
+    if let Some(path) = &log_file {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        crate::sys::redirect_output(path)
+            .with_context(|| format!("could not open the log file {}", path.display()))?;
+    }
     let level = std::env::var("BIRD_LOG")
         .ok()
         .and_then(|l| l.parse().ok())

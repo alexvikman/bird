@@ -713,6 +713,13 @@ pub fn doctor() -> Result<()> {
     if cfg!(target_os = "linux") {
         let (ok, detail) = linux::dns_configured(&cfg);
         check(ok, detail.clone(), detail);
+        if linux::unit_logs_as_root() {
+            check(
+                false,
+                String::new(),
+                "the systemd service is from an older Bird and lets root open the log file in ~/.bird — run `bird install` to update it".into(),
+            );
+        }
     } else {
         let resolver = std::fs::read_to_string(resolver_path(&cfg.tld)).unwrap_or_default();
         check(

@@ -219,6 +219,9 @@ enum Command {
         http_port: Option<u16>,
         #[arg(long)]
         https_port: Option<u16>,
+        /// Write the log here instead of to stdout/stderr (the systemd service)
+        #[arg(long, hide = true)]
+        log_file: Option<PathBuf>,
     },
     /// Print everything about this Bird as JSON (used by the menu bar app)
     #[command(hide = true)]
@@ -349,7 +352,8 @@ pub fn main() -> Result<()> {
         Command::Daemon {
             http_port,
             https_port,
-        } => crate::daemon::run(http_port, https_port),
+            log_file,
+        } => crate::daemon::run(http_port, https_port, log_file),
         Command::State { available } => state(available),
         Command::SystemInstall { user, group, home } => {
             install::system_install(&user, &group, &home)
