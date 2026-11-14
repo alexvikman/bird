@@ -102,7 +102,7 @@ fn download_checked(release: &Release, sums: &str, name: &str, label: &str) -> R
         .with_context(|| format!("release {} has no {name}", release.tag_name))?;
     let expected =
         checksum_for(sums, name).with_context(|| format!("SHA256SUMS lists no {name}"))?;
-    let bytes = php::download(&asset.browser_download_url, label)?;
+    let bytes = php::download(&asset.browser_download_url, label, php::MAX_DOWNLOAD)?;
     let actual = sha256_hex(&bytes);
     if actual != expected {
         bail!("{name} failed verification: sha256 {actual}, SHA256SUMS says {expected}");
@@ -159,13 +159,11 @@ pub fn self_update(check_only: bool) -> Result<()> {
     let sums_asset = release
         .asset("SHA256SUMS")
         .context("the release has no SHA256SUMS")?;
-    let fetch = |asset: &Asset| {
-        php::http()?
-            .get(&asset.browser_download_url)
-            .send()
-            .and_then(|r| r.error_for_status())
-            .and_then(|r| r.text())
-            .with_context(|| format!("could not download {}", asset.name))
+    // Both are small text files, read before anything vouches for them.
+    let fetch = |asset: &Asset| -> Result<String> {
+        let bytes = php::fetch(&php::http()?, &asset.browser_download_url, 1 << 20)
+            .with_context(|| format!("could not download {}", asset.name))?;
+        String::from_utf8(bytes).with_context(|| format!("{} is not text", asset.name))
     };
     let sums = fetch(sums_asset)?;
     // SHA256SUMS only counts if it carries a signature from a key compiled

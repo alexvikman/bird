@@ -179,6 +179,9 @@ const MANIFEST_SCHEMA: u32 = 1;
 #[derive(Deserialize)]
 struct Manifest {
     schema: u32,
+    /// When it was published (`2026-10-22T09:52:05Z`).
+    #[serde(default)]
+    updated_at: Option<String>,
     #[serde(default)]
     latest: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(default)]
@@ -205,30 +208,97 @@ struct Asset {
 fn fetch_manifest(base: &str) -> Result<Manifest> {
     let client = http()?;
     let url = format!("{base}/manifest.json");
-    let body = client
-        .get(&url)
-        .send()
-        .and_then(|r| r.error_for_status())
-        .and_then(|r| r.bytes())
-        .with_context(|| format!("could not fetch {url}"))?;
+    let body = fetch(&client, &url, MAX_MANIFEST)?;
     // Bird's own builds count only with a signature from a key compiled into
     // Bird: the manifest's sha256 sums then vouch for every archive. A custom
     // mirror is trusted as configured.
     let signature = if base == DEFAULT_MIRROR {
         let sig_url = format!("{url}.sig");
-        let sig = client
-            .get(&sig_url)
-            .send()
-            .and_then(|r| r.error_for_status())
-            .and_then(|r| r.text())
-            .with_context(|| {
-                format!("could not fetch {sig_url}; not trusting an unsigned PHP manifest")
-            })?;
-        Some(sig)
+        let sig = fetch(&client, &sig_url, MAX_SIGNATURE)
+            .context("not trusting an unsigned PHP manifest")?;
+        Some(String::from_utf8(sig).context("the manifest signature is not text")?)
     } else {
         None
     };
-    check_manifest(&url, &body, signature.as_deref(), crate::signing::PHP_KEYS)
+    let manifest = check_manifest(&url, &body, signature.as_deref(), crate::signing::PHP_KEYS)?;
+    if signature.is_some() {
+        check_not_rolled_back(manifest.updated_at.as_deref(), &seen_manifest_file())?;
+    }
+    Ok(manifest)
+}
+
+/// The most Bird reads of a manifest (the real one is well under 1 MB) and
+/// of its signature, both fetched before anything vouches for them.
+const MAX_MANIFEST: u64 = 16 << 20;
+const MAX_SIGNATURE: u64 = 64 << 10;
+
+/// The most Bird downloads for a file whose size it doesn't know beforehand
+/// (PHP and Bird archives are some tens of MB).
+pub(crate) const MAX_DOWNLOAD: u64 = 512 << 20;
+
+/// Fetches a small file into memory, refusing more than `max` bytes.
+pub(crate) fn fetch(client: &reqwest::blocking::Client, url: &str, max: u64) -> Result<Vec<u8>> {
+    let resp = client
+        .get(url)
+        .send()
+        .and_then(|r| r.error_for_status())
+        .with_context(|| format!("could not fetch {url}"))?;
+    let mut body = Vec::new();
+    resp.take(max + 1)
+        .read_to_end(&mut body)
+        .with_context(|| format!("could not fetch {url}"))?;
+    if body.len() as u64 > max {
+        bail!("{url} is larger than the {max} bytes Bird accepts for it");
+    }
+    Ok(body)
+}
+
+/// Where the date of the newest signed manifest seen so far is kept.
+fn seen_manifest_file() -> PathBuf {
+    paths().php_root().join(".manifest-seen")
+}
+
+/// `2026-10-22T09:52:05Z`, the one format manifest.py writes; such dates
+/// compare as text.
+fn is_manifest_date(s: &str) -> bool {
+    s.len() == 20
+        && s.bytes().zip("0000-00-00T00:00:00Z".bytes()).all(|(b, p)| {
+            if p == b'0' {
+                b.is_ascii_digit()
+            } else {
+                b == p
+            }
+        })
+}
+
+/// Refuses a signed manifest older than one this Bird has seen before, and
+/// remembers the newest. An old manifest still carries a valid signature, so
+/// whoever can replace the files of the release (without the signing key)
+/// could otherwise serve one, and `bird php:update` would move to old PHP
+/// builds with known holes.
+fn check_not_rolled_back(updated_at: Option<&str>, seen_file: &Path) -> Result<()> {
+    let seen = std::fs::read_to_string(seen_file)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| is_manifest_date(s));
+    let current = updated_at.filter(|d| is_manifest_date(d));
+    match (seen.as_deref(), current) {
+        (Some(seen), Some(current)) if current < seen => bail!(
+            "the PHP manifest is from {current}, older than the one from {seen} this Bird has \
+             already seen; not trusting a rollback (if the date really went back, delete {})",
+            seen_file.display()
+        ),
+        (Some(seen), None) => bail!(
+            "the PHP manifest has no date, and this Bird has already seen one from {seen}; \
+             not trusting a rollback"
+        ),
+        (seen, Some(current)) if seen != Some(current) => {
+            // Best effort: before `bird install` there is no ~/.bird/php yet.
+            let _ = std::fs::write(seen_file, format!("{current}\n"));
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Verifies `signature` (when given) over the raw manifest bytes, then parses
@@ -433,7 +503,7 @@ fn install_into(cfg: &Config, minor: &str, dir: &Path) -> Result<String> {
             std::fs::create_dir_all(&bin)?;
             for (kind, binary) in [("cli", "php"), ("fpm", "php-fpm")] {
                 let url = format!("{base}/php-{full}-{kind}-{}.tar.gz", platform());
-                let archive = download(&url, &format!("PHP {full} {kind}"))?;
+                let archive = download(&url, &format!("PHP {full} {kind}"), MAX_DOWNLOAD)?;
                 extract_binary(&archive, binary, &bin.join(binary))
                     .with_context(|| format!("could not extract {binary} from {url}"))?;
             }
@@ -664,7 +734,7 @@ fn download_verified(base: &str, asset: &Asset, label: &str) -> Result<Vec<u8>> 
         );
     }
     let url = format!("{base}/{}", asset.file);
-    let bytes = download(&url, label)?;
+    let bytes = download(&url, label, asset.size.min(MAX_DOWNLOAD))?;
     if bytes.len() as u64 != asset.size {
         bail!(
             "{} is {} bytes, the manifest says {}",
@@ -725,13 +795,19 @@ pub fn remove(minor: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn download(url: &str, label: &str) -> Result<Vec<u8>> {
+/// Downloads `url` into memory, at most `max` bytes: what the server says or
+/// sends never decides how much memory Bird takes.
+pub(crate) fn download(url: &str, label: &str, max: u64) -> Result<Vec<u8>> {
     let mut resp = http()?
         .get(url)
         .send()
         .and_then(|r| r.error_for_status())
         .with_context(|| format!("download failed: {url}"))?;
     let total = resp.content_length();
+    let too_large = || anyhow!("{url} is larger than the {max} bytes expected");
+    if total.is_some_and(|t| t > max) {
+        return Err(too_large());
+    }
     let mut buf = Vec::with_capacity(total.unwrap_or(0) as usize);
     let mut chunk = vec![0u8; 256 * 1024];
     let mut last_shown = 0usize;
@@ -739,6 +815,9 @@ pub(crate) fn download(url: &str, label: &str) -> Result<Vec<u8>> {
         let n = resp.read(&mut chunk)?;
         if n == 0 {
             break;
+        }
+        if (buf.len() + n) as u64 > max {
+            return Err(too_large());
         }
         buf.extend_from_slice(&chunk[..n]);
         if ui::is_tty() && buf.len() - last_shown > 1 << 20 {
@@ -923,6 +1002,42 @@ aC1lZDI1NTE5AAAAQLSM45sFiSVH/V2GC4StWGIUARsZgeILBwnJbaVv4xEpL9+fbjt/UT
 Jek2xLuMGjKUUEIcBnDbxJe3uqtkULsQ4=
 -----END SSH SIGNATURE-----
 ";
+
+    #[test]
+    fn refuses_a_manifest_older_than_one_seen() {
+        let dir = std::env::temp_dir().join(format!("bird-seen-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let seen = dir.join(".manifest-seen");
+        let (old, new) = ("2026-10-22T09:52:05Z", "2026-11-02T04:10:00Z");
+
+        // Nothing seen yet: anything goes, and the date is remembered.
+        check_not_rolled_back(None, &seen).unwrap();
+        assert!(!seen.exists());
+        check_not_rolled_back(Some(new), &seen).unwrap();
+        assert_eq!(std::fs::read_to_string(&seen).unwrap().trim(), new);
+        // The same manifest again, and a newer one, are fine.
+        check_not_rolled_back(Some(new), &seen).unwrap();
+        // An older one, or one that hides its date, is a rollback.
+        assert!(check_not_rolled_back(Some(old), &seen).is_err());
+        assert!(check_not_rolled_back(None, &seen).is_err());
+        assert!(check_not_rolled_back(Some("9999"), &seen).is_err());
+        assert_eq!(std::fs::read_to_string(&seen).unwrap().trim(), new);
+        // A seen file that is not a date (edited, truncated) counts as none.
+        std::fs::write(&seen, "garbage\n").unwrap();
+        check_not_rolled_back(Some(old), &seen).unwrap();
+        assert_eq!(std::fs::read_to_string(&seen).unwrap().trim(), old);
+
+        assert!(is_manifest_date("2026-10-22T09:52:05Z"));
+        for bad in [
+            "2026-10-22",
+            "2026-10-22T09:52:05+0",
+            "2026-10-22 09:52:05Z",
+            "",
+        ] {
+            assert!(!is_manifest_date(bad), "{bad:?}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn accepts_a_signed_manifest() {
