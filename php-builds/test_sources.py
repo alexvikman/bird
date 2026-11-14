@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+import manifest
 import sources
 
 GIT_URL = "https://github.com/static-php/qdbm.git"
@@ -432,6 +433,16 @@ class PinsTest(unittest.TestCase):
                 files = [os.path.basename(pin["url"]) for pin in pinned.values() if "url" in pin]
                 self.assertEqual(len(files), len(set(files)), "two sources would be saved under one name")
                 self.assertTrue(sources.read_keys(minor), "no release managers for PHP " + minor)
+                # What a build records from these pins must be what
+                # `manifest.py merge` accepts, or the publish stops there.
+                for name, pin in pinned.items():
+                    self.assertTrue(manifest.matches(manifest.SOURCE_RE, name), name)
+                    if "url" in pin:
+                        self.assertTrue(manifest.matches(manifest.SOURCE_RE, os.path.basename(pin["url"])), pin["url"])
+                    else:
+                        self.assertTrue(manifest.matches(manifest.GIT_URL_RE, pin["git"]), pin["git"])
+        for name in lock["tools"]:
+            self.assertTrue(manifest.matches(manifest.SOURCE_RE, name), name)
 
 
 class SignatureTest(unittest.TestCase):

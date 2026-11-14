@@ -16,8 +16,8 @@ load Xdebug.
 | `sources.py` | Pins, verifies and records what a build downloads; refreshes the lock |
 | `build.sh` | Builds, tests and packages one PHP version on the current machine |
 | `libde265-sse-only.php` | spc patch for linux-x86_64: libde265 without AVX kernels (see "Xdebug") |
-| `manifest.py` | Resolves versions from php.net; merges build metadata into `manifest.json` |
-| `test_sources.py` | Tests for `sources.py`: `python3 -m unittest discover -s php-builds` |
+| `manifest.py` | Resolves versions from php.net; validates the builds of a run and merges them into `manifest.json` |
+| `test_manifest.py`, `test_sources.py` | Tests for the two helpers: `python3 -m unittest discover -s php-builds` |
 | `../.github/workflows/php-builds.yml` | Builds PHP 8.1–8.5 for macOS and Linux (arm64, x86_64) and publishes them |
 
 ## Extensions
@@ -127,8 +127,8 @@ after its release managers are added to `php-keys.txt`
 
 **Not covered.** The build tools `spc doctor` installs with Homebrew or apt,
 and the runner image itself, are trusted as they come. `SPC_PREBUILT=1` builds
-use libraries compiled by the spc project and are marked unverified; the
-workflow refuses to publish them. The workflow always builds in an
+use libraries compiled by the spc project and are marked unverified;
+`manifest.py merge` refuses to publish them. The workflow always builds in an
 empty tree; a local `.work/` tree that is used again keeps the tools and
 libraries an earlier build left there.
 
@@ -284,8 +284,34 @@ approval. The publish job:
 1. verifies the published `manifest.json` against `manifest.json.sig` before
    merging new builds into it (anyone who can edit the release could replace
    it, and its builds are signed again),
-2. signs the merged manifest and checks the signature against `PHP_KEYS`,
-3. uploads the archives, then `manifest.json.sig`, then `manifest.json`.
+2. validates what each build job uploaded (below) and merges the builds it
+   accepts,
+3. signs the merged manifest and checks the signature against `PHP_KEYS`,
+4. uploads the archives, then `manifest.json.sig`, then `manifest.json`.
+
+A build job is not trusted with more than its own build. Every job's artifact
+(`php-<version>-<platform>`) is downloaded into its own directory, and
+`manifest.py merge` only accepts it when:
+
+- the run planned that version and platform,
+- its build file is the one that very job reported. An artifact's name
+  proves nothing (any job of a run can upload under any name), so each build
+  job writes the sha256 of its build file into an annotation
+  (`bird-php-build <artifact> <sha256>`), and the publish job reads the
+  annotations of the job GitHub itself named `PHP <version> (<platform>)`.
+  A job cannot write another job's annotations,
+- it holds exactly one build file, `php-<version>-<platform>.json`, whose
+  `version`, `platform`, `minor` and `recipe` are those of that job and of
+  this commit, with no fields beyond what `build.sh` writes,
+- every archive it lists is named
+  `php-<version>-<kind>-<platform>-<sha256 start>.tar.gz` for that same
+  version and platform, is there, and has the size and sha256 listed,
+- it holds no other file, and none of its sources is marked unverified.
+
+So a job that was tampered with can only spoil its own build: it cannot
+replace another job's files or its whole artifact, claim another version or
+platform, or put a foreign file on the release. One rejected artifact stops
+the whole publish, before anything is signed.
 
 A dispatch with `publish` that finds nothing to build re-signs the published
 manifest, e.g. after rotating the key:

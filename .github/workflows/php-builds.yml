@@ -20,7 +20,11 @@
 # written by any other workflow run there.
 #
 # What goes into a build is pinned and verified by build.sh before anything is
-# compiled (php-builds/README.md, "Sources").
+# compiled (php-builds/README.md, "Sources"). What comes out of a build job is
+# not trusted either: the publish job takes each job's artifact on its own and
+# only accepts the build that job itself reported, for the version and
+# platform it was given (`manifest.py merge`), so one compromised job cannot
+# replace another's build.
 name: PHP builds
 
 on:
@@ -134,6 +138,15 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: php-builds/build.sh "$PHP_VERSION" --out dist
 
+      # Any job of this run could upload an artifact under this job's name.
+      # An annotation, though, belongs to the job that writes it: the publish
+      # job only accepts the build whose build file has the sha256 reported
+      # here (and that file lists the sha256 of every archive).
+      - name: Report the build
+        env:
+          BUILD: php-${{ matrix.php }}-${{ matrix.platform }}
+        run: echo "::notice title=PHP build::bird-php-build $BUILD $(shasum -a 256 "dist/$BUILD.json" | cut -d' ' -f1)"
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: php-${{ matrix.php }}-${{ matrix.platform }}
@@ -168,6 +181,9 @@ jobs:
     environment: php-release
     permissions:
       contents: write
+      # To read what each build job reported (its annotations).
+      actions: read
+      checks: read
     concurrency:
       group: php-builds-publish
       cancel-in-progress: false
@@ -181,23 +197,45 @@ jobs:
 
       # Only builds that succeeded upload a php-* artifact (failed ones only
       # logs-php-*), so a partial build publishes just the complete builds.
+      # Each artifact gets its own directory, artifacts/php-<version>-<platform>:
+      # merged into one, a job could overwrite the files of another.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: needs.build.result != 'skipped'
         with:
           pattern: php-*
-          path: dist
-          merge-multiple: true
+          path: artifacts
 
       - name: Check builds
-        if: needs.build.result == 'failure'
+        if: needs.build.result != 'skipped'
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
         run: |
           shopt -s nullglob
-          built=(dist/php-*.json)
+          built=(artifacts/*/)
           if [ "${#built[@]}" -eq 0 ]; then
-            echo "Every build failed: nothing to publish."
+            echo "No build uploaded anything: nothing to publish."
             exit 1
           fi
-          echo "::warning::some builds failed; publishing the ${#built[@]} that succeeded"
+          if [ "$BUILD_RESULT" = "failure" ]; then
+            echo "::warning::some builds failed; publishing the ${#built[@]} that succeeded"
+          fi
+
+      # What each build job said it built: its name, as GitHub derives it
+      # from the matrix, and the lines of its annotations. `manifest.py merge`
+      # picks out the reports and only hears a job about its own build.
+      - name: Build reports
+        if: needs.build.result != 'skipped'
+        run: |
+          gh api "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100" \
+            --jq '.jobs[] | select(.name | startswith("PHP ")) | [.check_run_url, .name] | @tsv' > "$RUNNER_TEMP/jobs.tsv"
+          : > "$RUNNER_TEMP/reports.tsv"
+          while IFS=$'\t' read -r check_run name; do
+            messages="$(gh api "$check_run/annotations?per_page=100" --jq '.[].message')"
+            while IFS= read -r line; do
+              printf '%s\t%s\n' "$name" "$line" >> "$RUNNER_TEMP/reports.tsv"
+            done <<<"$messages"
+          done < "$RUNNER_TEMP/jobs.tsv"
+          cat "$RUNNER_TEMP/reports.tsv"
 
       - name: Allowed signers
         run: |
@@ -217,6 +255,8 @@ jobs:
           fi
 
       - name: Merge manifest.json
+        env:
+          MATRIX: ${{ needs.plan.outputs.matrix }}
         run: |
           mkdir -p dist previous
           # Captured first: run steps use pipefail, and `grep -q` exiting early
@@ -238,8 +278,15 @@ jobs:
               exit 1
             fi
           fi
-          shopt -s nullglob
-          python3 php-builds/manifest.py merge --existing previous/manifest.json --out dist/manifest.json dist/php-*.json
+          # Nothing a build job uploaded is taken on trust: every artifact
+          # must be a build this run planned and the one its own job
+          # reported, describe only its own version and platform, and list
+          # exactly its own files with their real size and sha256. One that
+          # does not stops the publish. The archives of the accepted builds
+          # are moved to dist/.
+          touch "$RUNNER_TEMP/reports.tsv"
+          python3 php-builds/manifest.py merge --existing previous/manifest.json --out dist/manifest.json \
+            --artifacts artifacts --matrix "$MATRIX" --reports "$RUNNER_TEMP/reports.tsv" --collect dist
           cat dist/manifest.json
 
       - name: Sign manifest.json
@@ -261,8 +308,9 @@ jobs:
         run: |
           shopt -s nullglob
           # Archives first, so the manifest never points at missing files.
-          # Their names carry their sha256 (build.sh), so this never replaces
-          # a file the live manifest.json points at.
+          # dist/ only holds what `manifest.py merge` accepted. Their names
+          # carry their sha256 (build.sh, checked by merge), so this never
+          # replaces a file the live manifest.json points at.
           archives=(dist/*.tar.gz)
           if [ "${#archives[@]}" -gt 0 ]; then
             gh release upload "$RELEASE_TAG" "${archives[@]}" --clobber
