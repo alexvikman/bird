@@ -173,12 +173,14 @@ manifest, e.g. after rotating the key:
 gh workflow run php-builds.yml -f only-missing=true -f publish=true
 ```
 
-Introducing signatures (once): the published manifest is unsigned, so the
-publish job stops unless the run also has `-f adopt-unsigned=true`. Check the
-manifest first (its builds and sha256 sums should match a run you trust; the
-job logs the sha256 of the manifest it adopts). A Bird release that requires
-the signature must only ship after a signed manifest is published, or PHP
-installs fail.
+If the published `manifest.json` has no `manifest.json.sig`, the publish job
+stops: it never signs over a manifest it can't verify (someone who can edit
+the release could delete the signature and swap the manifest). Put the last
+signed pair back on the release first.
+
+Bird also remembers the `updated_at` of the newest signed manifest it has seen
+(`~/.bird/php/.manifest-seen`) and refuses an older one, so an old manifest
+with its old, still valid signature can't be used to roll PHP back.
 
 Rotating the key: add the new public key to `PHP_KEYS`, release Bird, replace
 the secret, re-sign, and drop the old key in a later release.

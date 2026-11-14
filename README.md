@@ -183,12 +183,18 @@ signs `manifest.json` (`ssh-keygen -Y sign -n bird-php`) in the `php-release`
 environment, which only `main` can use and which needs the owner's approval,
 and Bird refuses the default mirror's manifest unless `manifest.json.sig`
 matches a key in `PHP_KEYS` (`src/signing.rs`). Every archive is then checked
-against the manifest's sha256 sums. See
+against the manifest's sha256 sums, and a manifest older than one Bird has
+already seen is refused (an old one still has a valid signature). See
 [php-builds/README.md](php-builds/README.md#signing). The PHP key is
 
 ```text
 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOFCBm+uCYPaByT8wvmM5u+Fw9t0f302T2/bJ1FXGsbp bird-php
 ```
+
+Composer is downloaded from getcomposer.org and only installed if its
+signature (`composer.phar.sig`) matches Composer's own release key, which is
+compiled into Bird (`COMPOSER_RELEASE_KEY` in `src/shim.rs`, the "Tags Public
+Key" on [composer.github.io/pubkeys.html](https://composer.github.io/pubkeys.html)).
 
 ## Development
 
