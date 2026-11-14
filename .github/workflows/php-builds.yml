@@ -15,7 +15,9 @@
 # Hardening: never runs on pull requests or other events from forks, the token
 # is read-only except in the publish job, inputs reach shells only through env,
 # checkout keeps no credentials, and every action is pinned to a commit SHA
-# (Dependabot keeps the pins current).
+# (Dependabot keeps the pins current). Builds use no Actions cache: spc does
+# not re-check sources it finds already downloaded, and a cache on main can be
+# written by any other workflow run there.
 name: PHP builds
 
 on:
@@ -41,10 +43,6 @@ on:
         description: Upload to the `php` release and update manifest.json (main only; with nothing to build, re-signs the manifest)
         type: boolean
         default: false
-      adopt-unsigned:
-        description: Merge into the published manifest.json even though it is unsigned (once, when introducing signatures)
-        type: boolean
-        default: false
   schedule:
     - cron: "0 4 * * 1"
 
@@ -57,7 +55,7 @@ env:
 jobs:
   plan:
     name: Resolve versions
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       count: ${{ steps.plan.outputs.count }}
@@ -114,13 +112,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Cache source downloads
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: php-builds/.work/${{ matrix.platform }}/${{ matrix.php }}/downloads
-          key: spc-downloads-${{ matrix.platform }}-${{ matrix.php }}-${{ hashFiles('php-builds/build.sh', 'php-builds/*.txt') }}
-          restore-keys: spc-downloads-${{ matrix.platform }}-${{ matrix.php }}-
-
       - name: Build
         env:
           PHP_VERSION: ${{ matrix.php }}
@@ -157,7 +148,7 @@ jobs:
       (needs.build.result == 'success' || needs.build.result == 'failure' ||
        (needs.build.result == 'skipped' && github.event_name == 'workflow_dispatch')) &&
       (github.event_name == 'schedule' || inputs.publish)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The signing key is a secret of this environment, which requires the
     # owner's approval before the job runs.
     environment: php-release
@@ -212,8 +203,6 @@ jobs:
           fi
 
       - name: Merge manifest.json
-        env:
-          ADOPT_UNSIGNED: ${{ inputs.adopt-unsigned }}
         run: |
           mkdir -p dist previous
           # Captured first: run steps use pipefail, and `grep -q` exiting early
@@ -223,14 +212,15 @@ jobs:
             gh release download "$RELEASE_TAG" --pattern manifest.json --dir previous
             # Its builds are signed again below, so they must be ones we signed
             # before: anyone who can edit the release can replace this file.
+            # There is no way to adopt an unsigned one from here; that would
+            # sign whatever someone put there after deleting the signature.
             if grep -qx manifest.json.sig <<<"$assets"; then
               gh release download "$RELEASE_TAG" --pattern manifest.json.sig --dir previous
               ssh-keygen -Y verify -f "$RUNNER_TEMP/allowed_signers" -I bird-php -n bird-php \
                 -s previous/manifest.json.sig < previous/manifest.json
-            elif [ "$ADOPT_UNSIGNED" = "true" ]; then
-              echo "::warning::adopting the unsigned manifest.json (sha256 $(sha256sum previous/manifest.json | cut -d' ' -f1))"
             else
-              echo "The published manifest.json is unsigned; check it and re-run with adopt-unsigned to sign it."
+              echo "The published manifest.json has no manifest.json.sig; not signing over it."
+              echo "Put the last signed manifest.json and manifest.json.sig back on the release first."
               exit 1
             fi
           fi
@@ -245,6 +235,7 @@ jobs:
           [ -n "$SIGNING_KEY" ] || { echo "BIRD_PHP_SIGNING_KEY is not set in the php-release environment"; exit 1; }
           umask 077
           key="$RUNNER_TEMP/php-key"
+          trap 'rm -f "$key"' EXIT
           printf '%s\n' "$SIGNING_KEY" > "$key"
           rm -f dist/manifest.json.sig # ssh-keygen would ask before overwriting
           ssh-keygen -Y sign -f "$key" -n bird-php dist/manifest.json

@@ -144,6 +144,7 @@ jobs:
           [ -n "$SIGNING_KEY" ] || { echo "BIRD_RELEASE_SIGNING_KEY is not set in the release environment"; exit 1; }
           umask 077
           key="$RUNNER_TEMP/release-key"
+          trap 'rm -f "$key"' EXIT
           printf '%s\n' "$SIGNING_KEY" > "$key"
           rm -f dist/SHA256SUMS.sig # ssh-keygen would ask before overwriting
           ssh-keygen -Y sign -f "$key" -n bird-release dist/SHA256SUMS
