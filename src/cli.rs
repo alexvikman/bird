@@ -521,7 +521,7 @@ fn link(name: Option<String>, secure: bool, isolate: Option<String>) -> Result<(
             .to_string_lossy()
             .to_string()
     }));
-    if name.is_empty() {
+    if !sites::is_site_name(&name) {
         bail!("could not derive a site name; pass one: bird link myapp");
     }
     if cfg.proxies.contains_key(&name) {
@@ -803,6 +803,9 @@ fn set_secure(name: Option<String>, secure: bool) -> Result<()> {
 fn add_proxy(name: String, upstream: String, secure: bool) -> Result<()> {
     proxy::parse_upstream(&upstream)?;
     let name = sites::slug(&name);
+    if !sites::is_site_name(&name) {
+        bail!("a proxy needs a name like `vite` or `api.app`");
+    }
     let mut cfg = Config::load()?;
     cfg.proxies.insert(
         name.clone(),

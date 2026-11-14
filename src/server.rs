@@ -242,6 +242,13 @@ pub fn locate(docroot: &Path, url_path: &str) -> Located {
     Located::NotFound
 }
 
+/// Where a directory requested without its trailing slash redirects to.
+/// Always one leading slash: for `//docs`, a `Location: //docs/` would send
+/// the browser to the host `docs`, not to this site.
+fn add_slash(path: &str) -> String {
+    format!("/{}/", path.trim_start_matches('/'))
+}
+
 fn percent_decode(s: &str) -> Option<String> {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -291,7 +298,7 @@ async fn serve_site(
             .await
         }
         Located::AddSlash => {
-            let mut location = format!("{}/", req.uri().path());
+            let mut location = add_slash(req.uri().path());
             if let Some(q) = req.uri().query() {
                 location.push('?');
                 location.push_str(q);
@@ -667,6 +674,14 @@ mod tests {
             http::HeaderValue::from_bytes("city=Göteborg; XDEBUG_SESSION=1".as_bytes()).unwrap(),
         );
         assert!(wants_xdebug(&utf8, &uri("/")));
+    }
+
+    #[test]
+    fn slash_redirects_stay_on_the_site() {
+        assert_eq!(add_slash("/wp-admin"), "/wp-admin/");
+        assert_eq!(add_slash("/a/b"), "/a/b/");
+        assert_eq!(add_slash("//docs"), "/docs/");
+        assert_eq!(add_slash("///evil.example/x"), "/evil.example/x/");
     }
 
     #[test]
