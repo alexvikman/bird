@@ -325,16 +325,32 @@ jobs:
       - name: Upload assets
         run: |
           shopt -s nullglob
+          # GitHub's uploads fail now and then (a 502, a reset connection).
+          # --clobber makes trying again safe: a half-uploaded asset is
+          # replaced, and every archive name is unique to its contents.
+          upload() {
+            local attempt=1 pause
+            until gh release upload "$RELEASE_TAG" "$@" --clobber; do
+              if [ "$attempt" -ge 5 ]; then
+                echo "::error title=Upload failed::gave up after $attempt attempts: $*"
+                return 1
+              fi
+              pause=$((15 * attempt + RANDOM % 15))
+              echo "Upload failed (attempt $attempt of 5); trying again in ${pause}s"
+              sleep "$pause"
+              attempt=$((attempt + 1))
+            done
+          }
           # Archives first, so the manifest never points at missing files.
           # dist/ only holds what `manifest.py merge` accepted. Their names
           # carry their sha256 (build.sh, checked by merge), so this never
           # replaces a file the live manifest.json points at.
           archives=(dist/*.tar.gz)
           if [ "${#archives[@]}" -gt 0 ]; then
-            gh release upload "$RELEASE_TAG" "${archives[@]}" --clobber
+            upload "${archives[@]}"
           fi
           # The signature before the manifest it signs. Until manifest.json
           # follows, Bird refuses the mismatched pair: installs fail for a few
           # seconds, but never trust a manifest that isn't signed.
-          gh release upload "$RELEASE_TAG" dist/manifest.json.sig --clobber
-          gh release upload "$RELEASE_TAG" dist/manifest.json --clobber
+          upload dist/manifest.json.sig
+          upload dist/manifest.json
