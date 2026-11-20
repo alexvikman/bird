@@ -122,16 +122,13 @@ struct SitesPane: View {
 
     var body: some View {
         PaneScaffold(
-            pane: .sites, tld: state.tld, layout: .table,
-            subtitle: "\(state.sites.count) sites · .\(state.tld)",
+            pane: .sites, tld: state.tld, layout: .table(title: counted(state.sites.count, "Site", "Sites")),
             actions: [
                 PaneAction(
                     title: "Link Folder…", icon: "link.badge.plus",
                     help: "Serve a project folder as <name>.\(state.tld)", run: linkFolder),
-                PaneAction(
-                    title: "Refresh", icon: "arrow.clockwise", help: "Reload the list of sites",
-                    run: { Task { await model.refresh() } }),
-            ]
+            ],
+            refresh: model.refresh
         ) {
             Table(rows, selection: $ui.selection, sortOrder: $ui.sortOrder) {
                 TableColumn("Site", value: \.domain) { site in
@@ -303,6 +300,11 @@ func abbreviate(_ path: String) -> String {
     return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
 }
 
+/// "1 Site", "8 Sites".
+func counted(_ count: Int, _ one: String, _ many: String) -> String {
+    "\(count) \(count == 1 ? one : many)"
+}
+
 // MARK: - Proxies
 
 final class ProxiesUI: ObservableObject {
@@ -318,12 +320,13 @@ struct ProxiesPane: View {
 
     var body: some View {
         PaneScaffold(
-            pane: .proxies, tld: state.tld, layout: .table,
+            pane: .proxies, tld: state.tld, layout: .table(title: counted(state.proxies.count, "Proxy", "Proxies")),
             actions: [
                 PaneAction(
                     title: "Add Proxy…", icon: "plus",
                     help: "Serve a .\(state.tld) domain from another server", run: { ui.adding = true }),
-            ]
+            ],
+            refresh: model.refresh
         ) {
             Table(state.proxies) {
                 TableColumn("Domain") { proxy in
@@ -400,12 +403,13 @@ struct FoldersPane: View {
 
     var body: some View {
         PaneScaffold(
-            pane: .folders, tld: state.tld, layout: .table,
+            pane: .folders, tld: state.tld, layout: .table(title: counted(state.paths.count, "Parked Folder", "Parked Folders")),
             actions: [
                 PaneAction(
                     title: "Park Folder…", icon: "plus",
                     help: "Serve every project in a folder as <project>.\(state.tld)", run: park),
-            ]
+            ],
+            refresh: model.refresh
         ) {
             Table(state.paths.map(ParkedFolder.init)) {
                 TableColumn("Folder") { folder in
@@ -505,17 +509,14 @@ struct PhpPane: View {
                 model.perform(["php:update"], activity: "Updating PHP…", then: { await model.loadAvailable() })
             })
         }
-        actions.append(PaneAction(
-            title: "Check for Updates", icon: "arrow.clockwise",
-            help: "Check for new PHP versions and builds"
-        ) {
-            Task { await model.loadAvailable() }
-        })
         return actions
     }
 
     var body: some View {
-        PaneScaffold(pane: .php, tld: state.tld, actions: actions) {
+        PaneScaffold(pane: .php, tld: state.tld, actions: actions, refresh: {
+            await model.refresh()
+            await model.loadAvailable()
+        }) {
             Card(title: "Versions") {
                 ForEach(Array(rows.enumerated()), id: \.element.id) { i, row in
                     if i > 0 { CardDivider() }
@@ -826,7 +827,7 @@ struct AboutPane: View {
     static let repository = "https://github.com/alexvikman/bird"
 
     var body: some View {
-        PaneScaffold(pane: .about, tld: state.tld) {
+        PaneScaffold(pane: .about, tld: state.tld, refresh: model.checkForUpdates) {
             Text(version).foregroundStyle(.secondary).textSelection(.enabled)
                 .padding(.top, 2)
             if let built = Self.buildDate {
@@ -897,7 +898,7 @@ struct SettingsPane: View {
     let state: BirdState
 
     var body: some View {
-        PaneScaffold(pane: .settings, tld: state.tld) {
+        PaneScaffold(pane: .settings, tld: state.tld, refresh: model.refresh) {
             Card(title: "PHP") {
                 SettingRow(title: "Global PHP version") {
                     Picker("Global PHP version", selection: Binding(

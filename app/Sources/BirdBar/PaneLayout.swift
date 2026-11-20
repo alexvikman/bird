@@ -43,6 +43,18 @@ enum Pane: String, CaseIterable, Identifiable {
         }
     }
 
+    /// The hover text of the pane's Refresh button.
+    var refreshHelp: String {
+        switch self {
+        case .sites: "Reload the list of sites"
+        case .proxies: "Reload the list of proxies"
+        case .folders: "Reload the parked folders"
+        case .php: "Reload the installed versions and check for new PHP versions and builds"
+        case .settings: "Reload Bird's status and settings"
+        case .about: "Check for a new version of Bird"
+        }
+    }
+
     var icon: String {
         switch self {
         case .sites: "globe"
@@ -115,15 +127,18 @@ struct PaneScaffold<Extra: View, Content: View>: View {
     enum Layout {
         /// Cards of rows that scroll, header included.
         case cards
-        /// A table filling the space below the header.
-        case table
+        /// A table in a card with a title, filling the space below the
+        /// header, so it starts as far below the header as the first card.
+        case table(title: String)
     }
 
     let pane: Pane
     let tld: String
     var layout: Layout = .cards
-    var subtitle: String?
+    /// The pane's own buttons, left of Refresh.
     var actions: [PaneAction] = []
+    /// What the Refresh button, last in every pane's toolbar, reloads.
+    let refresh: () async -> Void
     /// Lines under the header's text (About's version).
     @ViewBuilder var headerExtra: Extra
     @ViewBuilder var content: Content
@@ -141,14 +156,16 @@ struct PaneScaffold<Extra: View, Content: View>: View {
                     .padding(.top, PaneMetrics.top)
                     .padding(.bottom, PaneMetrics.bottom)
                 }
-            case .table:
-                VStack(spacing: PaneMetrics.spacing) {
+            case .table(let title):
+                VStack(alignment: .leading, spacing: PaneMetrics.spacing) {
                     header
-                    content
-                        .tableStyle(.inset(alternatesRowBackgrounds: false))
-                        .scrollContentBackground(.hidden)
-                        .background(CardBox())
-                        .clipShape(RoundedRectangle(cornerRadius: PaneMetrics.corner, style: .continuous))
+                    Card(title: title) {
+                        content
+                            .tableStyle(.inset(alternatesRowBackgrounds: false))
+                            .scrollContentBackground(.hidden)
+                            .frame(maxHeight: .infinity)
+                            .clipShape(RoundedRectangle(cornerRadius: PaneMetrics.corner, style: .continuous))
+                    }
                 }
                 .padding(.horizontal, PaneMetrics.side)
                 .padding(.top, PaneMetrics.top)
@@ -156,7 +173,9 @@ struct PaneScaffold<Extra: View, Content: View>: View {
             }
         }
         .navigationTitle(pane.title)
-        .navigationSubtitle(subtitle ?? "")
+        // Every pane has at least the Refresh button: with an empty toolbar
+        // macOS shrinks it to a plain title bar, with the title centered and
+        // the pane moved up, so that pane would not look like the others.
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 ForEach(actions) { action in
@@ -166,6 +185,12 @@ struct PaneScaffold<Extra: View, Content: View>: View {
                     .help(action.help)
                     .disabled(action.disabled)
                 }
+                Button {
+                    Task { await refresh() }
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .help(pane.refreshHelp)
             }
         }
     }
@@ -191,11 +216,11 @@ struct PaneScaffold<Extra: View, Content: View>: View {
 
 extension PaneScaffold where Extra == EmptyView {
     init(
-        pane: Pane, tld: String, layout: Layout = .cards, subtitle: String? = nil,
-        actions: [PaneAction] = [], @ViewBuilder content: () -> Content
+        pane: Pane, tld: String, layout: Layout = .cards, actions: [PaneAction] = [],
+        refresh: @escaping () async -> Void, @ViewBuilder content: () -> Content
     ) {
         self.init(
-            pane: pane, tld: tld, layout: layout, subtitle: subtitle, actions: actions,
+            pane: pane, tld: tld, layout: layout, actions: actions, refresh: refresh,
             headerExtra: { EmptyView() }, content: content)
     }
 }
