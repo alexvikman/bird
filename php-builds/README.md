@@ -17,8 +17,10 @@ load Xdebug.
 | `build.sh` | Builds, tests and packages one PHP version on the current machine |
 | `libde265-sse-only.php` | spc patch for linux-x86_64: libde265 without AVX kernels (see "Xdebug") |
 | `manifest.py` | Resolves versions from php.net; validates the builds of a run and merges them into `manifest.json` |
-| `test_manifest.py`, `test_sources.py` | Tests for the two helpers: `python3 -m unittest discover -s php-builds` |
+| `triage.py` | Decides whether a failed run is re-run, left alone or reported in an issue (see "When a run fails") |
+| `test_manifest.py`, `test_sources.py`, `test_triage.py` | Tests for the helpers: `python3 -m unittest discover -s php-builds` |
 | `../.github/workflows/php-builds.yml` | Builds PHP 8.1–8.5 for macOS and Linux (arm64, x86_64) and publishes them |
+| `../.github/workflows/php-builds-retry.yml` | Re-runs a failed run once, or opens an issue |
 
 ## Extensions
 
@@ -254,7 +256,8 @@ new PHP releases builds nothing, asks for no approval and finishes in seconds.
 When some builds fail (say Linux, while macOS succeeds), the publish job still
 runs and publishes the builds that succeeded; the run is marked failed and the
 failed builds' logs are kept as `logs-php-*` artifacts. Since nothing of a
-failed build is published, the next Monday builds it again (and asks for
+failed build is published, it is built again: first by the automatic
+re-run (see "When a run fails"), otherwise the next Monday (which asks for
 approval again, even if that is all there is). If every build failed, publish
 stops before touching the release. A cancelled run publishes nothing. A
 dispatch with `publish` behaves the same.
@@ -267,6 +270,30 @@ gh workflow run php-builds.yml -f only-missing=true -f publish=true
 
 GitHub disables scheduled workflows in public repositories after 60 days
 without activity in the repository; re-enable it in the Actions tab.
+
+### When a run fails
+
+`php-builds-retry.yml` looks at every run on `main` that fails or is
+cancelled, and `triage.py` decides from its jobs and their annotations:
+
+- **Re-run, once,** after two minutes, the failed jobs (`gh run rerun
+  --failed`), when some builds failed or were lost. GitHub's runners now and
+  then cancel a job on their own, mid-build, with only "The operation was
+  canceled." (the macOS Intel runners most of all), and a mirror can be down
+  for longer than `build.sh` retries it. The re-run's publish job waits for
+  approval like any other, and publishes the builds of every attempt (each
+  vouched for by the attempt that built it, see "Signing").
+- **Nothing,** when the run was cancelled on purpose (by a person, or by a
+  concurrency group for a newer run: GitHub says so in the jobs'
+  annotations), when publishing was rejected, or when a newer run exists or
+  `main` has moved on (that run could no longer publish).
+- **An issue** (label `php-builds`, assigned to the owner; a comment on the
+  one already open) when the jobs still fail after that re-run, when the
+  publish job failed, or when more than half the builds failed (more likely
+  the change than the runners). It lists each failed job, its step, its
+  error and the end of its log.
+
+Uploads to the release are tried up to five times, with a growing pause.
 
 ### Signing
 

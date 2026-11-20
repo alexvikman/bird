@@ -1,0 +1,123 @@
+# Re-runs the failed jobs of a PHP builds run once, and opens an issue when
+# that is not enough. See php-builds/README.md, "When a run fails".
+#
+# GitHub's runners now and then lose a job (the macOS Intel ones most of
+# all: cancelled mid-build with only "The operation was canceled."), and a
+# download can fail for longer than build.sh retries it. Both used to need a
+# person to click "Re-run failed jobs". php-builds/triage.py decides, from
+# the run's jobs and their annotations, whether a run is worth re-running
+# (once), needs nothing (cancelled or rejected on purpose, or out of date),
+# or needs a person (an issue, or a comment on the one already open).
+#
+# A re-run publishes nothing by itself: the publish job waits for the
+# owner's approval of the `php-release` environment, as always.
+#
+# workflow_run runs this file from main, with a token that can re-run
+# workflows and write issues. So it never checks out or runs anything from
+# the run it looks at: it only reads that run's metadata, annotations and
+# logs through the API, and the code it runs is main's own triage.py.
+name: PHP builds retry
+
+on:
+  workflow_run:
+    workflows: [PHP builds]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: php-builds-retry-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    if: >-
+      contains(fromJSON('["failure", "cancelled", "timed_out"]'), github.event.workflow_run.conclusion) &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: write
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      ISSUE_LABEL: php-builds
+      ISSUE_TITLE: PHP builds failed
+    steps:
+      # main as it is now (workflow_run's own ref), not the run's commit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: php-builds/triage.py
+          sparse-checkout-cone-mode: false
+
+      - name: Read the run
+        env:
+          RUN: ${{ toJSON(github.event.workflow_run) }}
+        run: |
+          mkdir -p triage/logs
+          printf '%s' "$RUN" > triage/run.json
+          gh api --paginate "repos/$GH_REPO/actions/runs/$RUN_ID/jobs?filter=latest&per_page=100" --jq '.jobs[]' |
+            jq -s . > triage/jobs.json
+          gh api "repos/$GH_REPO/actions/runs/$RUN_ID/approvals" > triage/approvals.json
+          gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha > triage/main-sha
+          gh api "repos/$GH_REPO/actions/workflows/php-builds.yml/runs?per_page=1" --jq '.workflow_runs[0].id' > triage/latest-run
+          # The annotations of the jobs that did not succeed: why each one
+          # stopped, and whether someone cancelled the run.
+          echo '{}' > triage/annotations.json
+          jq -r '.[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out") | [.id, .check_run_url] | @tsv' triage/jobs.json |
+            while IFS=$'\t' read -r id check_run; do
+              messages="$(gh api --paginate "$check_run/annotations?per_page=100" --jq '[.[].message]' | jq -s 'add // []')"
+              jq --arg id "$id" --argjson messages "$messages" '.[$id] = $messages' triage/annotations.json > triage/next.json
+              mv triage/next.json triage/annotations.json
+            done
+
+      - name: Decide
+        id: decide
+        run: |
+          python3 -I php-builds/triage.py decide --run triage/run.json --jobs triage/jobs.json \
+            --annotations triage/annotations.json --approvals triage/approvals.json \
+            --main-sha "$(cat triage/main-sha)" --latest-run "$(cat triage/latest-run)" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Re-run the failed jobs
+        if: steps.decide.outputs.action == 'retry'
+        env:
+          REASON: ${{ steps.decide.outputs.reason }}
+        run: |
+          # Give whatever failed (a mirror, php.net, the runners) time to recover.
+          sleep 120
+          gh run rerun "$RUN_ID" --failed
+          echo "::notice title=Re-run started::$REASON"
+
+      - name: Open or update the issue
+        if: steps.decide.outputs.action == 'issue'
+        env:
+          REASON: ${{ steps.decide.outputs.reason }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          jq -r '.[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out") | .id' triage/jobs.json |
+            while read -r id; do
+              gh run view "$RUN_ID" --job "$id" --log > "triage/logs/$id.log" 2>/dev/null || true
+            done
+          python3 -I php-builds/triage.py issue --run triage/run.json --jobs triage/jobs.json \
+            --annotations triage/annotations.json --logs triage/logs --reason "$REASON" > triage/issue.md
+
+          gh label create "$ISSUE_LABEL" --description "A PHP builds run needs a person" --color B60205 --force
+          existing="$(gh issue list --label "$ISSUE_LABEL" --state open --limit 1 --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file triage/issue.md
+            echo "::notice title=Issue updated::#$existing: $REASON"
+          else
+            url="$(gh issue create --title "$ISSUE_TITLE" --label "$ISSUE_LABEL" --assignee "$OWNER" --body-file triage/issue.md)"
+            echo "::notice title=Issue opened::$url"
+          fi
+
+      - name: Nothing to do
+        if: steps.decide.outputs.action == 'none'
+        env:
+          REASON: ${{ steps.decide.outputs.reason }}
+        run: echo "::notice title=Not re-run::$REASON"

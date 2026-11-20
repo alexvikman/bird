@@ -2,6 +2,9 @@
 # static-php-cli and publishes them to the rolling `php` GitHub Release,
 # together with manifest.json and its signature. See php-builds/README.md.
 #
+# A run that fails or loses a job is re-run once by php-builds-retry.yml,
+# which opens an issue when that is not enough.
+#
 # Runs on manual dispatch and weekly (Mondays 04:00 UTC). The weekly run only
 # builds what the published manifest.json lacks: new PHP patch releases, and
 # every version again when the build files changed (see `manifest.py recipe`).
