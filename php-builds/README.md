@@ -302,7 +302,10 @@ A build job is not trusted with more than its own build. Every job's artifact
   job writes the sha256 of its build file into an annotation
   (`bird-php-build <artifact> <sha256>`), and the publish job reads the
   annotations of the job GitHub itself named `PHP <version> (<platform>)`.
-  A job cannot write another job's annotations,
+  A job cannot write another job's annotations. A job that ran more than
+  once (re-run jobs, all of the same commit) has reports from each attempt;
+  each attempt may report one build, and any of them may vouch for the
+  artifact,
 - it holds exactly one build file, `php-<version>-<platform>.json`, whose
   `version`, `platform`, `minor` and `recipe` are those of that job and of
   this commit, with no fields beyond what `build.sh` writes,

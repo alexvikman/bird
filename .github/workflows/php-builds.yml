@@ -232,19 +232,22 @@ jobs:
             echo "::warning::some builds failed; publishing the ${#built[@]} that succeeded"
           fi
 
-      # What each build job said it built: its name, as GitHub derives it
-      # from the matrix, and the lines of its annotations. `manifest.py merge`
-      # picks out the reports and only hears a job about its own build.
+      # What each build job said it built: its check run, its name, as GitHub
+      # derives it from the matrix, and the lines of its annotations.
+      # `manifest.py merge` picks out the reports and only hears a job about
+      # its own build. From every attempt of this run: re-running the failed
+      # jobs copies the others into the new attempt without their
+      # annotations, which stay with the attempt that built.
       - name: Build reports
         if: needs.build.result != 'skipped'
         run: |
-          gh api "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100" \
+          gh api --paginate "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID/jobs?filter=all&per_page=100" \
             --jq '.jobs[] | select(.name | startswith("PHP ")) | [.check_run_url, .name] | @tsv' > "$RUNNER_TEMP/jobs.tsv"
           : > "$RUNNER_TEMP/reports.tsv"
           while IFS=$'\t' read -r check_run name; do
-            messages="$(gh api "$check_run/annotations?per_page=100" --jq '.[].message')"
+            messages="$(gh api --paginate "$check_run/annotations?per_page=100" --jq '.[].message')"
             while IFS= read -r line; do
-              printf '%s\t%s\n' "$name" "$line" >> "$RUNNER_TEMP/reports.tsv"
+              printf '%s\t%s\t%s\n' "${check_run##*/}" "$name" "$line" >> "$RUNNER_TEMP/reports.tsv"
             done <<<"$messages"
           done < "$RUNNER_TEMP/jobs.tsv"
           cat "$RUNNER_TEMP/reports.tsv"

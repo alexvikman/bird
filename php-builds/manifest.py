@@ -20,8 +20,9 @@
       build job, named like its artifact (php-<version>-<platform>), with what
       build.sh wrote. Nothing in them is trusted: each must be a build the
       run planned (--matrix, as printed by `matrix`), be the build its own
-      job reported (--reports: "<job name><tab><annotation line>" per line,
-      as the workflow reads them from GitHub), describe that version and
+      job reported (--reports: "<check run id><tab><job name><tab><annotation
+      line>" per line, as the workflow reads them from GitHub, from every
+      attempt of the run), describe that version and
       platform only, and list exactly its own files with their real size and
       sha256. The archives of the accepted builds are moved to --collect.
       Builds already in the existing manifest are kept unless rebuilt (same
@@ -153,6 +154,7 @@ class Rejected(Exception):
 # A build job is named "PHP <version> (<platform>)" by the workflow, and says
 # what it built in an annotation: "bird-php-build <artifact> <sha256 of its
 # build file>".
+CHECK_RUN_RE = re.compile(r"[0-9]{1,20}")
 JOB_RE = re.compile(r"PHP ([0-9]+\.[0-9]+\.[0-9]+) \(([a-z0-9]+-[a-z0-9_]+)\)")
 REPORT_RE = re.compile(r"bird-php-build (php-[0-9.]+-[a-z0-9_-]+) ([0-9a-f]{64})")
 ARTIFACT_RE = re.compile(r"php-([0-9]+\.[0-9]+\.[0-9]+)-([a-z0-9]+-[a-z0-9_]+)")
@@ -246,20 +248,28 @@ def check_sources(version, sources):
 
 
 def read_reports(path):
-    """What each build job reported having built: {artifact name: {sha256 of its build file}}.
+    """What each build job reported having built:
+    {artifact name: {check run id: {sha256 of its build file}}}.
 
     Any job of a run can upload an artifact under any name, another job's
     included. An annotation, though, belongs to the job that wrote it, and
     GitHub names the job from the workflow's matrix: so a job is only heard
     about its own build, whatever it writes.
+
+    Re-running a run's failed jobs runs those again in a new attempt and
+    copies the others into it, without their annotations; re-running all of
+    them builds everything again. So a job can have run several times, each
+    time with its own check run, all of the same commit: each run is kept
+    apart, and any of them may vouch for the build.
     """
     reports = {}
     with open(path) as f:
         for line in f:
-            job, _, message = line.rstrip("\n").partition("\t")
+            check_run, _, rest = line.rstrip("\n").partition("\t")
+            job, _, message = rest.partition("\t")
             named, said = JOB_RE.fullmatch(job), REPORT_RE.fullmatch(message.strip())
-            if named and said and said.group(1) == "php-%s-%s" % named.groups():
-                reports.setdefault(said.group(1), set()).add(said.group(2))
+            if CHECK_RUN_RE.fullmatch(check_run) and named and said and said.group(1) == "php-%s-%s" % named.groups():
+                reports.setdefault(said.group(1), {}).setdefault(check_run, set()).add(said.group(2))
     return reports
 
 
@@ -283,10 +293,13 @@ def check_artifact(directory, planned, recipe, reports):
     meta = "php-%s-%s.json" % (version, platform)
     if [e for e in entries if e.endswith(".json")] != [meta]:
         raise Rejected("expected exactly one build file, %s" % meta)
-    reported = reports.get(name, set())
-    if len(reported) != 1:
-        raise Rejected("its build job reported %s" % ("several builds" if reported else "no build"))
-    if sha256_file(os.path.join(directory, meta)) not in reported:
+    # A job builds once each time it runs; one that says otherwise is not heard.
+    runs = reports.get(name, {})
+    if any(len(said) > 1 for said in runs.values()):
+        raise Rejected("its build job reported several builds")
+    if not runs:
+        raise Rejected("its build job reported no build")
+    if sha256_file(os.path.join(directory, meta)) not in set().union(*runs.values()):
         raise Rejected("%s is not the build file its build job reported" % meta)
     try:
         with open(os.path.join(directory, meta)) as f:
@@ -411,7 +424,7 @@ def main():
     p.add_argument("--out", required=True)
     p.add_argument("--artifacts", metavar="DIR", help="one directory per build artifact (missing: no new builds)")
     p.add_argument("--matrix", metavar="JSON", help="the matrix this run planned, as printed by `matrix`")
-    p.add_argument("--reports", metavar="FILE", help="what the build jobs reported: <job name><tab><annotation line>")
+    p.add_argument("--reports", metavar="FILE", help="what the build jobs reported: <check run id><tab><job name><tab><annotation line>")
     p.add_argument("--collect", metavar="DIR", help="where the archives of accepted builds are moved")
     p.set_defaults(func=merge)
 

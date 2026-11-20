@@ -53,14 +53,14 @@ def write_build(directory, build, name=None):
         json.dump(build, f)
 
 
-def report(directory, job=None, artifact=None, digest=None):
+def report(directory, job=None, artifact=None, digest=None, check_run="1001"):
     """The line the workflow passes on for a build job's annotation."""
     name = os.path.basename(directory)
     version, platform = name[len("php-"):].split("-", 1)
     if digest is None:
         with open(os.path.join(directory, name + ".json"), "rb") as f:
             digest = hashlib.sha256(f.read()).hexdigest()
-    return "%s\tbird-php-build %s %s\n" % (job or "PHP %s (%s)" % (version, platform), artifact or name, digest)
+    return "%s\t%s\tbird-php-build %s %s\n" % (check_run, job or "PHP %s (%s)" % (version, platform), artifact or name, digest)
 
 
 def reports_of(root, *lines):
@@ -87,7 +87,7 @@ class ArtifactTest(unittest.TestCase):
         if reports is None:
             name = os.path.basename(directory)
             meta = os.path.join(directory, name + ".json")
-            reports = {name: {manifest.sha256_file(meta)}} if os.path.isfile(meta) else {}
+            reports = {name: {"1001": {manifest.sha256_file(meta)}}} if os.path.isfile(meta) else {}
         return manifest.check_artifact(directory, self.planned, RECIPE, reports)
 
     def assertRejected(self, directory, message):
@@ -113,12 +113,17 @@ class ArtifactTest(unittest.TestCase):
         # job itself can say what it built.
         directory, _ = make_artifact(self.root)
         name = os.path.basename(directory)
+        digest = manifest.sha256_file(os.path.join(directory, name + ".json"))
         for reports, message in (
             ({}, "reported no build"),
-            ({name: set()}, "reported no build"),
-            ({"php-8.4.27-linux-x86_64": {"a" * 64}}, "reported no build"),
-            ({name: {"a" * 64}}, "not the build file its build job reported"),
-            ({name: {"a" * 64, "b" * 64}}, "reported several builds"),
+            ({name: {}}, "reported no build"),
+            ({"php-8.4.27-linux-x86_64": {"1": {"a" * 64}}}, "reported no build"),
+            ({name: {"1": {"a" * 64}}}, "not the build file its build job reported"),
+            ({name: {"1": {"a" * 64}, "2": {"b" * 64}}}, "not the build file its build job reported"),
+            ({name: {"1": {"a" * 64, "b" * 64}}}, "reported several builds"),
+            # One run saying two things is not heard, even if it names this build.
+            ({name: {"1": {digest, "b" * 64}}}, "reported several builds"),
+            ({name: {"1": {digest}, "2": {"a" * 64, "b" * 64}}}, "reported several builds"),
         ):
             with self.assertRaises(manifest.Rejected) as caught:
                 self.check(directory, reports)
@@ -136,13 +141,39 @@ class ArtifactTest(unittest.TestCase):
             report(directory, artifact="php-8.4.27-linux-x86_64", digest=other),
             report(directory, job="Publish release", digest=other),
             report(directory, job="PHP 8.4.27 (macos-aarch64) extra", digest=other),
-            "PHP 8.4.27 (macos-aarch64)\tbird-php-build php-8.4.27-macos-aarch64 %s trailing\n" % other,
-            "PHP 8.4.27 (macos-aarch64)\tsomething else entirely\n",
+            "1001\tPHP 8.4.27 (macos-aarch64)\tbird-php-build php-8.4.27-macos-aarch64 %s trailing\n" % other,
+            "1001\tPHP 8.4.27 (macos-aarch64)\tsomething else entirely\n",
+            # Without a check run, or with something else in its place.
+            "PHP 8.4.27 (macos-aarch64)\tbird-php-build php-8.4.27-macos-aarch64 %s\n" % other,
+            report(directory, digest=other, check_run=""),
+            report(directory, digest=other, check_run="12a"),
+            report(directory, digest=other, check_run="PHP 8.4.27 (macos-aarch64)"),
             "no tab at all\n",
             "\n",
         )
         self.addCleanup(os.remove, path)
-        self.assertEqual(manifest.read_reports(path), {"php-8.4.27-macos-aarch64": {digest}})
+        self.assertEqual(manifest.read_reports(path), {"php-8.4.27-macos-aarch64": {"1001": {digest}}})
+
+    def test_keeps_each_run_of_a_job_apart(self):
+        # Re-run jobs: the same job, a check run per attempt.
+        directory, _ = make_artifact(self.root)
+        digest = report(directory).split()[-1]
+        path = reports_of(
+            self.root,
+            report(directory, digest="a" * 64, check_run="900"),
+            report(directory, digest="b" * 64, check_run="900"),
+        )
+        self.addCleanup(os.remove, path)
+        self.assertEqual(manifest.read_reports(path), {"php-8.4.27-macos-aarch64": {"1001": {digest}, "900": {"a" * 64, "b" * 64}}})
+
+    def test_accepts_a_build_any_run_of_its_job_reported(self):
+        # Re-running all jobs builds again: either attempt may vouch for the
+        # artifact that was kept, since both built this commit.
+        directory, build = make_artifact(self.root)
+        name = os.path.basename(directory)
+        digest = manifest.sha256_file(os.path.join(directory, name + ".json"))
+        for runs in ({"1": {digest}, "2": {"a" * 64}}, {"1": {"a" * 64}, "2": {digest}}):
+            self.assertEqual(self.check(directory, {name: runs})[0], build)
 
     def test_rejects_other_names(self):
         for name in ("evil", "php-8.4.27-windows-x86_64", "php-8.4-macos-aarch64", "logs-php-8.4.27-macos-aarch64"):
@@ -336,11 +367,22 @@ class MergeTest(unittest.TestCase):
         build["extensions"].append("backdoor")
         write_build(directory, build)
         planned = [("8.4.27", "macos-aarch64"), ("8.4.27", "linux-x86_64")]
-        self.assertEqual(manifest.check_artifact(directory, set(planned), RECIPE, {"php-8.4.27-linux-x86_64": {manifest.sha256_file(os.path.join(directory, "php-8.4.27-linux-x86_64.json"))}})[0], build)
+        self.assertEqual(manifest.check_artifact(directory, set(planned), RECIPE, {"php-8.4.27-linux-x86_64": {"1001": {manifest.sha256_file(os.path.join(directory, "php-8.4.27-linux-x86_64.json"))}}})[0], build)
         with self.assertRaises(SystemExit) as caught:
             self.merge(planned, reports=reports)
         self.assertIn("php-8.4.27-linux-x86_64: php-8.4.27-linux-x86_64.json is not the build file its build job reported", str(caught.exception))
         self.assertFalse(os.path.exists(self.collect))
+
+    def test_publishes_after_rerunning_failed_jobs(self):
+        # Attempt 1 built macOS and lost Linux; attempt 2 re-ran Linux and
+        # copied the macOS job without its annotations. Each build is vouched
+        # for by the attempt that made it.
+        mac_dir, mac = make_artifact(self.artifacts)
+        linux_dir, linux = make_artifact(self.artifacts, platform="linux-x86_64")
+        reports = reports_of(self.root, report(mac_dir, check_run="101"), report(linux_dir, check_run="202"))
+        self.addCleanup(os.remove, reports)
+        result = self.merge([("8.4.27", "macos-aarch64"), ("8.4.27", "linux-x86_64")], reports=reports)
+        self.assertEqual([(b["version"], b["platform"], b["cli"]) for b in result["builds"]], [(b["version"], b["platform"], b["cli"]) for b in (mac, linux)])
 
     def test_one_bad_artifact_stops_the_publish(self):
         make_artifact(self.artifacts)
