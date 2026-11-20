@@ -14,6 +14,10 @@
 #   expired-ok accepts a signature although php.net's keyring gives the key
 #   an expiry date that has passed. A revoked key is never accepted.
 
+8.6 D95C03BC702BE9515344AE3374E44BC9067701A5  # Daniel Scherzer
+8.6 016895DE9A475111D537A6E69134FF30BC5A99B5  # Matteo Beccati
+8.6 5CFF17B64DC1C244F5D0EAC3E43535E2EB19010E  # Joe Ferguson
+
 8.5 1198C0117593497A5EC5C199286AF1F9897469DC  # Pierrick Charron
 8.5 49D9AF6BC72A80D6691719C8AA23F5BE9C7097D4  # Volker Dusch
 8.5 D95C03BC702BE9515344AE3374E44BC9067701A5  # Daniel Scherzer

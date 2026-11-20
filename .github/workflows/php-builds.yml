@@ -36,7 +36,7 @@ on:
       versions:
         description: PHP versions, comma separated (8.4 = latest 8.4.x, or an exact 8.4.26)
         type: string
-        default: "8.1,8.2,8.3,8.4,8.5"
+        default: "8.1,8.2,8.3,8.4,8.5,8.6"
       platforms:
         description: Platforms, comma separated
         type: string
@@ -78,7 +78,7 @@ jobs:
         env:
           # Scheduled runs have no inputs: all supported versions, only what is
           # missing from the release, and publish (see the publish job).
-          VERSIONS: ${{ inputs.versions || '8.1,8.2,8.3,8.4,8.5' }}
+          VERSIONS: ${{ inputs.versions || '8.1,8.2,8.3,8.4,8.5,8.6' }}
           PLATFORMS: ${{ inputs.platforms || 'macos-aarch64,macos-x86_64,linux-aarch64,linux-x86_64' }}
           ONLY_MISSING: ${{ github.event_name == 'schedule' || inputs.only-missing }}
           PUBLISH: ${{ github.event_name == 'schedule' || inputs.publish }}

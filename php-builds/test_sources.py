@@ -427,7 +427,7 @@ class PinsTest(unittest.TestCase):
         lock = sources.read_lock()
         by_hand = {name for name, _url, _digest, _conditions in sources.read_pins()}
         self.assertFalse(by_hand & set(lock["sources"]))
-        for minor in ("8.1", "8.2", "8.3", "8.4", "8.5"):
+        for minor in ("8.1", "8.2", "8.3", "8.4", "8.5", "8.6"):
             for os_name in ("macos", "linux"):
                 pinned = sources.pinned_sources(minor, os_name)
                 files = [os.path.basename(pin["url"]) for pin in pinned.values() if "url" in pin]

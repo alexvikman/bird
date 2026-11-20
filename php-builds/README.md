@@ -19,7 +19,7 @@ load Xdebug.
 | `manifest.py` | Resolves versions from php.net; validates the builds of a run and merges them into `manifest.json` |
 | `triage.py` | Decides whether a failed run is re-run, left alone or reported in an issue (see "When a run fails") |
 | `test_manifest.py`, `test_sources.py`, `test_triage.py` | Tests for the helpers: `python3 -m unittest discover -s php-builds` |
-| `../.github/workflows/php-builds.yml` | Builds PHP 8.1–8.5 for macOS and Linux (arm64, x86_64) and publishes them |
+| `../.github/workflows/php-builds.yml` | Builds PHP 8.1–8.6 for macOS and Linux (arm64, x86_64) and publishes them |
 | `../.github/workflows/php-builds-retry.yml` | Re-runs a failed run once, or opens an issue |
 
 ## Extensions
