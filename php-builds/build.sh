@@ -168,6 +168,12 @@ if ! applies ">=8.4"; then
     fi
 fi
 
+# PHP 8.6's configure refuses libtool's old --with-pic, which spc 2.8 passes
+# on Linux; --enable-pic replaces it. The rest is spc's own command (env.ini).
+if applies ">=8.6 linux"; then
+    export SPC_CMD_PREFIX_PHP_CONFIGURE="./configure --prefix= --with-valgrind=no --disable-shared --enable-static --disable-all --disable-phpdbg --enable-pic"
+fi
+
 # spc picks phpmicro's patches for php-src by PHP version, and spc 2.8 does
 # not know 8.6. micro-patches.php applies the ones our build needs instead.
 export SPC_MICRO_PATCHES=
