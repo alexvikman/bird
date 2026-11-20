@@ -56,6 +56,7 @@ RECIPE_FILES = [
     "sources.py",
     "php-keys.txt",
     "libde265-sse-only.php",
+    "micro-patches.php",
 ]
 
 # GitHub runner per platform.

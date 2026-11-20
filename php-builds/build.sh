@@ -168,6 +168,10 @@ if ! applies ">=8.4"; then
     fi
 fi
 
+# spc picks phpmicro's patches for php-src by PHP version, and spc 2.8 does
+# not know 8.6. micro-patches.php applies the ones our build needs instead.
+export SPC_MICRO_PATCHES=
+
 static_exts="$(read_list "$here/extensions.txt" | join_commas)"
 shared_exts="$(read_list "$here/shared-extensions.txt" | join_commas)"
 libs="$(read_list "$here/libs.txt" | join_commas)"
@@ -271,7 +275,7 @@ if [[ ",$static_exts," == *,imap,* ]]; then
         rm -rf "$stray"
     fi
 fi
-build_flags=(--build-cli --build-fpm --with-libs="$libs")
+build_flags=(--build-cli --build-fpm --with-libs="$libs" --with-added-patch="$here/micro-patches.php")
 [ -n "$shared_exts" ] && build_flags+=(--build-shared="$shared_exts")
 # zig's compiler-rt lacks the x86 CPU detection libde265's AVX kernels need.
 [ "$platform" = linux-x86_64 ] && build_flags+=(--with-added-patch="$here/libde265-sse-only.php")

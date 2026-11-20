@@ -16,6 +16,7 @@ load Xdebug.
 | `sources.py` | Pins, verifies and records what a build downloads; refreshes the lock |
 | `build.sh` | Builds, tests and packages one PHP version on the current machine |
 | `libde265-sse-only.php` | spc patch for linux-x86_64: libde265 without AVX kernels (see "Xdebug") |
+| `micro-patches.php` | spc patch: applies phpmicro's php-src patches by PHP version, which spc 2.8 cannot for 8.6 |
 | `manifest.py` | Resolves versions from php.net; validates the builds of a run and merges them into `manifest.json` |
 | `triage.py` | Decides whether a failed run is re-run, left alone or reported in an issue (see "When a run fails") |
 | `test_manifest.py`, `test_sources.py`, `test_triage.py` | Tests for the helpers: `python3 -m unittest discover -s php-builds` |
