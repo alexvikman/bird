@@ -27,7 +27,7 @@ self-update --check` only looks. From source: `cargo build --release &&
 |---|---|
 | DNS | Built-in DNS server on `127.0.0.1:53535`. On macOS `/etc/resolver/test` points at it; on Linux a systemd-resolved drop-in routes `~test` to it. No dnsmasq. |
 | Web server | Built-in HTTP/1.1 + HTTP/2 server (hyper + rustls). Static files are served directly, PHP goes to PHP-FPM over FastCGI. No nginx, no config to regenerate. |
-| HTTPS | A local CA (trusted once at install) issues a certificate the first time a hostname is requested. Every site and subdomain works over HTTPS. The CA is name-constrained to the TLD (and no IP addresses), so even a leaked key can't impersonate real domains; `bird tld` replaces it. On Linux it goes into the system trust store and Chrome/Firefox's NSS stores (needs `certutil`). |
+| HTTPS | A local CA (trusted once at install) issues a certificate the first time a hostname is requested. Every site and subdomain works over HTTPS. The CA is name-constrained to the TLD (and no IP addresses), so even a leaked key can't impersonate real domains; `bird tld` replaces it. On Linux it goes into the system trust store and Chrome/Firefox's NSS stores (needs `certutil`). PHP trusts it too (`~/.bird/ca/ca-bundle.pem`, the system roots plus Bird's CA, set in each version's `conf.d/00-bird.ini`), so one site can call another over `https://<site>.test`. It is rebuilt whenever the daemon starts, so root updates reach PHP, and holds Bird's CA only while that is Bird's own, limited to the TLD. conf.d wins over php.ini, so a bundle of your own (e.g. a corporate proxy's CA) goes in `conf.d/99-local.ini`; one already set in php.ini is left alone (Bird then sets none for that version). Add `~/.bird/ca/ca.pem` to your own bundle to call other sites from PHP. |
 | Ports 80/443 | macOS: launchd binds them as root and hands the sockets to the daemon, which runs as you. Linux: a systemd service runs the daemon as you with only `CAP_NET_BIND_SERVICE`, which it drops right after binding. No privileged helper stays running. |
 | PHP | Bird's own static builds ([php-builds/](php-builds/), made with [static-php-cli](https://static-php.dev)), checked against sha256 sums from the signed release manifest, in `~/.bird/php/<version>`. One FPM pool per version, started on first request and stopped when idle. |
 | CLI | `~/.bird/bin/php`, `php8.4` and `composer` are shims that pick the same PHP version the site is served with. |
@@ -129,7 +129,7 @@ is enough on your own Mac; "Open menu bar app at login" is in Settings.
 ~/.bird/config.toml   global config, sites, proxies (hand-editable; picked up live)
 ~/.bird/bin/          bird + shims — put this first on PATH
 ~/.bird/php/8.4/      bin/php, bin/php-fpm, php.ini, conf.d/
-~/.bird/ca/           local certificate authority
+~/.bird/ca/           local certificate authority, ca-bundle.pem for PHP
 ~/.bird/valet/        Certificates/<site>.test.crt|.key for Vite (~/.config/valet links here)
 ~/.bird/log/          bird.log, php-8.4-fpm.log (rotated at 10 MB; 5 gzipped generations kept)
 ```
