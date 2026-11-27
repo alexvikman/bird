@@ -82,6 +82,8 @@ pub fn install(user_only: bool, php_version: Option<String>) -> Result<()> {
         )),
         tls::CaStatus::Existing => {}
     }
+    // PHP trusts the (possibly new) CA for calls between sites.
+    php::write_managed_inis(&cfg)?;
 
     if php::installed().is_empty() {
         let version = match php_version {

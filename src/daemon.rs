@@ -145,6 +145,8 @@ async fn main(http_port: Option<u16>, https_port: Option<u16>) -> Result<()> {
     }
     let mut cfg = Config::load()?;
     tls::ensure_ca_exists(&cfg.tld)?;
+    // Picks up system root updates (and a CA made above) for PHP.
+    tls::write_ca_bundle(&cfg.tld);
     if let Some(p) = http_port {
         cfg.http_port = p;
     }

@@ -882,9 +882,7 @@ fn opcache(state: Option<&str>) -> Result<()> {
     if let Some(state) = state {
         cfg.opcache = state == "on";
         cfg.save()?;
-        for i in php::installed() {
-            php::write_managed_ini(&i.minor, &cfg)?;
-        }
+        php::write_managed_inis(&cfg)?;
         if control::is_running() {
             control::send(json!({"cmd": "restart-php"}))?;
         }
@@ -1189,9 +1187,7 @@ fn php_limits(memory: Option<&str>, upload: Option<&str>, version: Option<&str>)
     }
     if memory.is_some() || upload.is_some() {
         cfg.save()?;
-        for i in php::installed() {
-            php::write_managed_ini(&i.minor, &cfg)?;
-        }
+        php::write_managed_inis(&cfg)?;
         if control::is_running() {
             control::send(json!({"cmd": "restart-php"}))?;
         }
@@ -1294,7 +1290,7 @@ fn set_tld(tld: Option<String>) -> Result<()> {
             cfg.tld = old_tld.clone();
             cfg.save()?;
             if replaced && let Some((cert, key)) = &old_ca {
-                crate::tls::restore_ca(cert, key)?;
+                crate::tls::restore_ca(cert, key, &old_tld)?;
             }
             return Err(e.context(format!("kept .{old_tld}")));
         }

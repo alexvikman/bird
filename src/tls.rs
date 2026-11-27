@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -102,16 +103,16 @@ pub fn generate_ca(tld: &str) -> Result<(String, String)> {
 
 fn write_ca(tld: &str) -> Result<()> {
     let (cert_pem, key_pem) = generate_ca(tld)?;
-    store_ca(&cert_pem, &key_pem)
+    store_ca(&cert_pem, &key_pem, tld)
 }
 
 /// Puts back a CA saved before it was replaced (`bird tld` when the
 /// privileged step fails).
-pub fn restore_ca(cert_pem: &str, key_pem: &str) -> Result<()> {
-    store_ca(cert_pem, key_pem)
+pub fn restore_ca(cert_pem: &str, key_pem: &str, tld: &str) -> Result<()> {
+    store_ca(cert_pem, key_pem, tld)
 }
 
-fn store_ca(cert_pem: &str, key_pem: &str) -> Result<()> {
+fn store_ca(cert_pem: &str, key_pem: &str, tld: &str) -> Result<()> {
     // The CA is trusted system-wide, so its key must never be readable by others.
     let dir = paths().ca_dir();
     std::fs::DirBuilder::new()
@@ -136,7 +137,152 @@ fn store_ca(cert_pem: &str, key_pem: &str) -> Result<()> {
     let tmp_cert = paths().ca_cert().with_extension("pem.tmp");
     std::fs::write(&tmp_cert, cert_pem)?;
     std::fs::rename(&tmp_cert, paths().ca_cert())?;
+    // PHP must trust the new CA too (and stop trusting the old one).
+    write_ca_bundle(tld);
     Ok(())
+}
+
+/// A warning in the daemon's log, or on the terminal for CLI commands.
+pub(crate) fn warn(msg: &str) {
+    if tracing::dispatcher::has_been_set() {
+        tracing::warn!("{msg}");
+    } else {
+        eprintln!("{} {msg}", crate::ui::yellow("warning:"));
+    }
+}
+
+/// Where systems keep their CA bundle. Bird's static PHP has no default of
+/// its own that fits every system.
+pub const SYSTEM_CA_BUNDLES: &[&str] = &[
+    "/etc/ssl/certs/ca-certificates.crt", // Debian, Ubuntu, Arch
+    "/etc/pki/tls/certs/ca-bundle.crt",   // Fedora, RHEL
+    "/etc/ssl/ca-bundle.pem",             // openSUSE
+    "/etc/ssl/cert.pem",                  // macOS, Alpine
+];
+
+/// This system's CA bundle: macOS has one place, Linux distributions each
+/// their own.
+pub fn system_ca_bundle() -> Option<&'static Path> {
+    let candidates = if cfg!(target_os = "macos") {
+        &SYSTEM_CA_BUNDLES[3..]
+    } else {
+        SYSTEM_CA_BUNDLES
+    };
+    candidates.iter().map(Path::new).find(|path| path.is_file())
+}
+
+/// What PHP trusts for outgoing TLS: the system's roots and Bird's CA, so
+/// one site can call another over `https://<site>.test`. Bird's CA is only
+/// added if `check_ca_for_trust` accepts it (Bird's own, limited to `tld`):
+/// PHP must never trust a CA that can vouch for real domains just because it
+/// sits in `~/.bird/ca`. Returns the bundle and why the CA was left out, if
+/// it was. The roots are bytes: bundles carry comments in any encoding.
+fn ca_bundle_contents(
+    system: &[u8],
+    bird_ca: Option<&str>,
+    tld: &str,
+) -> (Vec<u8>, Option<String>) {
+    let mut bundle = system.trim_ascii_end().to_vec();
+    bundle.push(b'\n');
+    let left_out = match bird_ca.map(|pem| (pem, check_ca_for_trust(pem, tld))) {
+        Some((pem, Ok(name))) => {
+            let entry = format!("\n# {name}, added by Bird\n{}\n", pem.trim());
+            bundle.extend_from_slice(entry.as_bytes());
+            None
+        }
+        Some((_, Err(e))) => Some(format!("{e:#}")),
+        None => None,
+    };
+    (bundle, left_out)
+}
+
+/// Writes `ca-bundle.pem` in `ca_dir` (see `ca_bundle_contents`) and returns
+/// the file PHP should use as its CA bundle, or None to set none. Rebuilt
+/// every time the CA changes, 00-bird.ini is written and the daemon starts,
+/// so a root the system removes or distrusts in an update leaves PHP soon
+/// too. Never as root: the bundle (and ~/.bird) must stay the user's.
+///
+/// Never fails and never leaves PHP worse off than without a bundle: if it
+/// can't be built, PHP keeps the bundle it had, or the system's (what it
+/// used before Bird made bundles). Without a system bundle PHP keeps its own
+/// defaults: one with only Bird's CA would cut it off from every real host.
+fn write_ca_bundle_from(ca_dir: &Path, tld: &str, system: Option<&Path>) -> Option<PathBuf> {
+    let bundle = ca_dir.join("ca-bundle.pem");
+    let system = system?;
+    let fallback = || {
+        if bundle.is_file() {
+            bundle.clone()
+        } else {
+            system.to_path_buf()
+        }
+    };
+    if crate::sys::is_root() {
+        return Some(fallback());
+    }
+    let roots = match std::fs::read(system) {
+        Ok(roots) => roots,
+        Err(e) => {
+            warn(&format!(
+                "could not read {} ({e}); PHP keeps the CA bundle it had",
+                system.display()
+            ));
+            return Some(fallback());
+        }
+    };
+    let ca_cert = ca_dir.join("ca.pem");
+    let bird_ca = match std::fs::read_to_string(&ca_cert) {
+        Ok(pem) => Some(pem),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            warn(&format!("could not read {} ({e})", ca_cert.display()));
+            None
+        }
+    };
+    let (contents, left_out) = ca_bundle_contents(&roots, bird_ca.as_deref(), tld);
+    if let Some(reason) = left_out {
+        warn(&format!(
+            "PHP does not trust Bird's CA for calls between sites: {reason}"
+        ));
+    }
+    // Usually nothing changed; then there is nothing to write (or to race on).
+    if std::fs::read(&bundle).is_ok_and(|current| current == contents) {
+        return Some(bundle);
+    }
+    if let Err(e) = replace_file(ca_dir, &bundle, &contents) {
+        warn(&format!(
+            "could not write {} ({e:#}); PHP keeps the CA bundle it had",
+            bundle.display()
+        ));
+        return Some(fallback());
+    }
+    Some(bundle)
+}
+
+/// Writes `file` in the private directory `dir` by renaming a finished copy
+/// into place, so PHP never reads half a bundle. The copy has a name of this
+/// process's own: the daemon and a CLI command may write at the same time.
+fn replace_file(dir: &Path, file: &Path, contents: &[u8]) -> Result<()> {
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    let mut tmp = file.as_os_str().to_owned();
+    tmp.push(format!(".{}.tmp", std::process::id()));
+    let tmp = PathBuf::from(tmp);
+    let written = std::fs::write(&tmp, contents).and_then(|()| std::fs::rename(&tmp, file));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    Ok(written?)
+}
+
+pub fn write_ca_bundle_in(ca_dir: &Path, tld: &str) -> Option<PathBuf> {
+    write_ca_bundle_from(ca_dir, tld, system_ca_bundle())
+}
+
+pub fn write_ca_bundle(tld: &str) -> Option<PathBuf> {
+    write_ca_bundle_in(&paths().ca_dir(), tld)
 }
 
 pub fn parse_pem(pem: &str) -> Option<CertificateDer<'static>> {
@@ -338,6 +484,130 @@ mod tests {
             None,
         )?;
         ee.verify_is_valid_for_subject_name(&ServerName::try_from(host.to_string()).unwrap())
+    }
+
+    /// A CA with Bird's name that could vouch for any domain.
+    fn unconstrained_ca() -> String {
+        let key = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::default();
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let mut dn = DistinguishedName::new();
+        dn.push(DnType::CommonName, format!("{CA_NAME_PREFIX} (x)"));
+        params.distinguished_name = dn;
+        params.self_signed(&key).unwrap().pem()
+    }
+
+    fn certificates(bundle: &[u8]) -> usize {
+        String::from_utf8_lossy(bundle)
+            .matches("BEGIN CERTIFICATE")
+            .count()
+    }
+
+    #[test]
+    fn ca_bundle_has_system_roots_and_only_birds_ca() {
+        let (bird, _) = generate_ca("test").unwrap();
+        // A label in Latin-1, as some distributions' bundles have.
+        let system =
+            b"# Certific\xe9\n-----BEGIN CERTIFICATE-----\nSYSTEM\n-----END CERTIFICATE-----\n\n";
+        let (bundle, left_out) = ca_bundle_contents(system, Some(&bird), "test");
+        assert!(left_out.is_none());
+        assert!(bundle.starts_with(system.trim_ascii_end()));
+        assert!(bundle.ends_with(format!("\n{}\n", bird.trim()).as_bytes()));
+        assert_eq!(certificates(&bundle), 2);
+
+        // A CA that could vouch for any domain is never added.
+        let (bundle, left_out) = ca_bundle_contents(system, Some(&unconstrained_ca()), "test");
+        assert_eq!(certificates(&bundle), 1);
+        assert!(left_out.is_some());
+        // Nor one of Bird's for another TLD.
+        let (bundle, left_out) = ca_bundle_contents(system, Some(&bird), "dev");
+        assert_eq!(certificates(&bundle), 1);
+        assert!(left_out.is_some());
+        // No CA yet: the system's roots, and nothing to warn about.
+        let (bundle, left_out) = ca_bundle_contents(system, None, "test");
+        assert_eq!(certificates(&bundle), 1);
+        assert!(left_out.is_none());
+    }
+
+    #[test]
+    fn writes_the_ca_bundle_and_falls_back_without_breaking_php() {
+        if crate::sys::is_root() {
+            return; // root never writes the bundle
+        }
+        let dir = std::env::temp_dir().join(format!("bird-bundle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ca_dir = dir.join("ca");
+        std::fs::create_dir_all(&ca_dir).unwrap();
+        let system = dir.join("system.pem");
+        std::fs::write(
+            &system,
+            b"# Certific\xe9\n-----BEGIN CERTIFICATE-----\nSYSTEM\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
+        let bundle = ca_dir.join("ca-bundle.pem");
+        let read = || std::fs::read(&bundle).unwrap();
+
+        // Before there is a CA: the system's roots, bytes and all.
+        assert_eq!(
+            write_ca_bundle_from(&ca_dir, "test", Some(&system)),
+            Some(bundle.clone())
+        );
+        assert_eq!(certificates(&read()), 1);
+        assert!(read().starts_with(b"# Certific\xe9\n"));
+
+        // Bird's CA for this TLD is added; for another TLD it is taken out.
+        let (bird, _) = generate_ca("test").unwrap();
+        std::fs::write(ca_dir.join("ca.pem"), &bird).unwrap();
+        write_ca_bundle_from(&ca_dir, "test", Some(&system));
+        assert_eq!(certificates(&read()), 2);
+        assert!(String::from_utf8_lossy(&read()).contains(bird.trim()));
+        write_ca_bundle_from(&ca_dir, "dev", Some(&system));
+        assert_eq!(certificates(&read()), 1);
+        // So is a swapped one that could vouch for any domain.
+        std::fs::write(ca_dir.join("ca.pem"), unconstrained_ca()).unwrap();
+        write_ca_bundle_from(&ca_dir, "test", Some(&system));
+        assert_eq!(certificates(&read()), 1);
+        std::fs::write(ca_dir.join("ca.pem"), &bird).unwrap();
+        write_ca_bundle_from(&ca_dir, "test", Some(&system));
+        let good = read();
+        assert_eq!(certificates(&good), 2);
+
+        // No temporary files stay behind, and the directory is private.
+        let names: Vec<_> = std::fs::read_dir(&ca_dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        let mode = std::fs::metadata(&ca_dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+
+        // System roots that can't be read: PHP keeps the bundle it had,
+        // never one with Bird's CA alone.
+        let gone = dir.join("gone.pem");
+        assert_eq!(
+            write_ca_bundle_from(&ca_dir, "test", Some(&gone)),
+            Some(bundle.clone())
+        );
+        assert_eq!(read(), good);
+        // Without an earlier bundle it is pointed at the system's, as before.
+        let empty = dir.join("empty-ca");
+        assert_eq!(
+            write_ca_bundle_from(&empty, "test", Some(&gone)),
+            Some(gone.clone())
+        );
+        // A bundle that can't be written (its directory is a file) likewise.
+        std::fs::write(dir.join("file"), "").unwrap();
+        assert_eq!(
+            write_ca_bundle_from(&dir.join("file"), "test", Some(&system)),
+            Some(system.clone())
+        );
+
+        // No system bundle at all: PHP keeps its own defaults, and what is
+        // there (00-bird.ini may still name it) is left alone.
+        assert_eq!(write_ca_bundle_from(&ca_dir, "test", None), None);
+        assert_eq!(read(), good);
+        assert!(!empty.exists());
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

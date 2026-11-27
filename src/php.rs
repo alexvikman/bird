@@ -552,7 +552,7 @@ impl Limits {
     }
 }
 
-pub fn managed_ini(opcache: bool, limits: Limits) -> String {
+pub fn managed_ini(opcache: bool, limits: Limits, ca_bundle: Option<&Path>) -> String {
     let enable = u8::from(opcache);
     let mut ini = format!(
         "; Managed by Bird and rewritten on install/update, `bird opcache on|off`\n\
@@ -567,6 +567,15 @@ pub fn managed_ini(opcache: bool, limits: Limits) -> String {
          opcache.memory_consumption = 256\n\
          opcache.max_accelerated_files = 50000\n"
     );
+    if let Some(path) = ca_bundle {
+        let path = path.display();
+        ini.push_str(&format!(
+            "\n; Trusted roots for outgoing TLS (curl, file_get_contents, sockets):\n\
+             ; the system's plus Bird's CA, so sites can call https://<site>.test.\n\
+             openssl.cafile = \"{path}\"\n\
+             curl.cainfo = \"{path}\"\n"
+        ));
+    }
     if limits.memory_mb.is_some() || limits.upload_mb.is_some() {
         ini.push_str("\n; `bird php:limits` (the app's PHP page)\n");
     }
@@ -589,13 +598,56 @@ pub fn managed_ini(opcache: bool, limits: Limits) -> String {
 }
 
 pub fn write_managed_ini(minor: &str, cfg: &Config) -> Result<()> {
-    let dir = paths().php_conf_d(minor);
-    std::fs::create_dir_all(&dir)?;
+    let ca_bundle = crate::tls::write_ca_bundle(&cfg.tld);
+    write_managed_ini_in(&paths().php_dir(minor), minor, cfg, ca_bundle.as_deref())
+}
+
+/// `write_managed_ini` for a PHP version's directory anywhere (migrations
+/// get their own home). A CA bundle the user set in php.ini is theirs to
+/// keep: Bird then sets none, where conf.d would win over it.
+pub fn write_managed_ini_in(
+    php_dir: &Path,
+    minor: &str,
+    cfg: &Config,
+    ca_bundle: Option<&Path>,
+) -> Result<()> {
+    let ca_bundle = ca_bundle.filter(|_| own_ca_bundle_in(php_dir).is_none());
+    let conf_d = php_dir.join("conf.d");
+    std::fs::create_dir_all(&conf_d)?;
     std::fs::write(
-        dir.join(MANAGED_INI),
-        managed_ini(cfg.opcache, Limits::for_version(cfg, minor)),
+        conf_d.join(MANAGED_INI),
+        managed_ini(cfg.opcache, Limits::for_version(cfg, minor), ca_bundle),
     )?;
     Ok(())
+}
+
+/// Rewrites 00-bird.ini for every installed PHP version, e.g. after `bird
+/// install` or a config change. The CA bundle is built once for all of them.
+pub fn write_managed_inis(cfg: &Config) -> Result<()> {
+    let ca_bundle = crate::tls::write_ca_bundle(&cfg.tld);
+    for i in installed() {
+        write_managed_ini_in(
+            &paths().php_dir(&i.minor),
+            &i.minor,
+            cfg,
+            ca_bundle.as_deref(),
+        )?;
+    }
+    Ok(())
+}
+
+/// The CA bundle a PHP version's php.ini names, if the user chose one: any
+/// but the system's, which Bird's own php.ini files used to set.
+pub fn own_ca_bundle_in(php_dir: &Path) -> Option<String> {
+    own_ca_bundle(&std::fs::read_to_string(php_dir.join("php.ini")).ok()?)
+}
+
+fn own_ca_bundle(php_ini: &str) -> Option<String> {
+    ["openssl.cafile", "curl.cainfo"]
+        .iter()
+        .filter_map(|key| ini_value(php_ini, key))
+        .map(|value| value.trim_matches(['"', '\'']).to_string())
+        .find(|path| !path.is_empty() && !crate::tls::SYSTEM_CA_BUNDLES.contains(&path.as_str()))
 }
 
 /// A size from php.ini (`512M`, `1G`, `-1`, or bytes) in MB; -1 stays -1.
@@ -621,7 +673,11 @@ pub fn ini_size_mb(value: &str) -> Option<i64> {
 /// The last value of `key` in a PHP version's php.ini (what applies when
 /// Bird sets nothing).
 pub fn php_ini_value(minor: &str, key: &str) -> Option<String> {
-    let text = std::fs::read_to_string(paths().php_ini(minor)).ok()?;
+    ini_value(&std::fs::read_to_string(paths().php_ini(minor)).ok()?, key)
+}
+
+/// The last value of `key` in an ini file's text.
+fn ini_value(text: &str, key: &str) -> Option<String> {
     text.lines()
         .filter_map(|line| line.split(';').next())
         .filter_map(|line| line.split_once('='))
@@ -891,30 +947,9 @@ fn default_ini(minor: &str) -> String {
          display_startup_errors = On\n\
          log_errors = On\n\
          \n\
-         date.timezone = {tz}\n\
-         {ca}",
+         date.timezone = {tz}\n",
         tz = system_timezone(),
-        ca = ca_bundle()
-            .map(|path| format!("\nopenssl.cafile = {path}\ncurl.cainfo = {path}\n"))
-            .unwrap_or_default(),
     )
-}
-
-/// The system's CA bundle, for PHP's openssl and curl (Bird's static PHP
-/// has no default of its own that fits every system). macOS has one place;
-/// Linux distributions each have their own.
-fn ca_bundle() -> Option<&'static str> {
-    if cfg!(target_os = "macos") {
-        return Some("/etc/ssl/cert.pem");
-    }
-    [
-        "/etc/ssl/certs/ca-certificates.crt", // Debian, Ubuntu, Arch
-        "/etc/pki/tls/certs/ca-bundle.crt",   // Fedora, RHEL
-        "/etc/ssl/ca-bundle.pem",             // openSUSE
-        "/etc/ssl/cert.pem",
-    ]
-    .into_iter()
-    .find(|path| Path::new(path).is_file())
 }
 
 #[cfg(test)]
@@ -1110,14 +1145,66 @@ Jek2xLuMGjKUUEIcBnDbxJe3uqtkULsQ4=
 
     #[test]
     fn managed_ini_revalidates_every_request() {
-        let on = managed_ini(true, Limits::default());
+        let on = managed_ini(true, Limits::default(), None);
         assert!(on.contains("opcache.enable = 1"));
         assert!(on.contains("opcache.validate_timestamps = 1"));
         assert!(on.contains("opcache.revalidate_freq = 0"));
-        assert!(managed_ini(false, Limits::default()).contains("opcache.enable = 0"));
+        assert!(managed_ini(false, Limits::default(), None).contains("opcache.enable = 0"));
         // Nothing set: php.ini decides.
         assert!(!on.contains("memory_limit"));
         assert!(!on.contains("upload_max_filesize"));
+        assert!(!on.contains("openssl.cafile"));
+    }
+
+    #[test]
+    fn managed_ini_points_tls_at_the_ca_bundle() {
+        let bundle = Path::new("/Users/a b/.bird/ca/ca-bundle.pem");
+        let ini = managed_ini(false, Limits::default(), Some(bundle));
+        // Quoted, so a BIRD_HOME with spaces still works.
+        assert!(ini.contains("openssl.cafile = \"/Users/a b/.bird/ca/ca-bundle.pem\"\n"));
+        assert!(ini.contains("curl.cainfo = \"/Users/a b/.bird/ca/ca-bundle.pem\"\n"));
+        assert!(
+            !default_ini("8.4").contains("cafile"),
+            "00-bird.ini owns it"
+        );
+    }
+
+    #[test]
+    fn a_ca_bundle_set_in_php_ini_is_the_users() {
+        // What Bird's php.ini files set before there was a bundle.
+        for system in crate::tls::SYSTEM_CA_BUNDLES {
+            let ini = format!("openssl.cafile = {system}\ncurl.cainfo = {system}\n");
+            assert_eq!(own_ca_bundle(&ini), None);
+        }
+        assert_eq!(
+            own_ca_bundle("memory_limit = 512M\n; curl.cainfo = /x.pem\n"),
+            None
+        );
+        assert_eq!(own_ca_bundle("curl.cainfo =\n"), None);
+        assert_eq!(
+            own_ca_bundle("openssl.cafile = /etc/ssl/cert.pem\ncurl.cainfo = \"/corp/ca.pem\"\n"),
+            Some("/corp/ca.pem".into())
+        );
+
+        let dir = std::env::temp_dir().join(format!("bird-ownca-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bundle = Path::new("/home/a/.bird/ca/ca-bundle.pem");
+        let managed = || std::fs::read_to_string(dir.join("conf.d/00-bird.ini")).unwrap();
+        let cfg = Config::default();
+        // No php.ini, or one with Bird's old lines: Bird's bundle is set.
+        write_managed_ini_in(&dir, "8.4", &cfg, Some(bundle)).unwrap();
+        assert!(managed().contains("curl.cainfo"));
+        std::fs::write(dir.join("php.ini"), "openssl.cafile = /etc/ssl/cert.pem\n").unwrap();
+        write_managed_ini_in(&dir, "8.4", &cfg, Some(bundle)).unwrap();
+        assert!(managed().contains("curl.cainfo"));
+        // The user's own: conf.d must not win over it.
+        std::fs::write(dir.join("php.ini"), "openssl.cafile = /corp/ca.pem\n").unwrap();
+        write_managed_ini_in(&dir, "8.4", &cfg, Some(bundle)).unwrap();
+        assert!(!managed().contains("cafile"));
+        assert!(!managed().contains("cainfo"));
+        assert!(managed().contains("opcache.enable"));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -1128,6 +1215,7 @@ Jek2xLuMGjKUUEIcBnDbxJe3uqtkULsQ4=
                 memory_mb: Some(1024),
                 upload_mb: Some(64),
             },
+            None,
         );
         assert!(ini.contains("memory_limit = 1024M\n"));
         assert!(ini.contains("upload_max_filesize = 64M\n"));
@@ -1138,6 +1226,7 @@ Jek2xLuMGjKUUEIcBnDbxJe3uqtkULsQ4=
                 memory_mb: Some(-1),
                 upload_mb: None,
             },
+            None,
         );
         assert!(unlimited.contains("memory_limit = -1\n"));
         assert!(!unlimited.contains("post_max_size"));
