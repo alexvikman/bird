@@ -44,6 +44,11 @@ pub const MIGRATIONS: &[Migration] = &[
         description: "Record that PHP versions installed before Bird 0.2 are static-php builds",
         run: record_php_sources,
     },
+    Migration {
+        id: "2026_11_27_000001_php_trusts_bird_ca",
+        description: "Let PHP trust Bird's CA, so sites can call each other over HTTPS",
+        run: php_trusts_bird_ca,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -80,6 +85,40 @@ fn record_php_sources(home: &Path) -> Result<()> {
                 format!("{}\n", crate::php::SOURCE_STATIC_PHP),
             )?;
         }
+    }
+    Ok(())
+}
+
+/// PHP read the system's roots only (openssl.cafile in php.ini), so a site
+/// calling `https://<other>.test` failed with cURL error 60. Builds
+/// `ca/ca-bundle.pem` (system roots plus Bird's CA) and points every PHP
+/// version's 00-bird.ini at it; conf.d wins over php.ini, which stays as is.
+/// A php.ini with a CA bundle of the user's own keeps it: they are told.
+fn php_trusts_bird_ca(home: &Path) -> Result<()> {
+    let Ok(entries) = std::fs::read_dir(home.join("php")) else {
+        return Ok(());
+    };
+    let config = home.join("config.toml");
+    let cfg = if config.exists() {
+        Config::load_from(&config)?
+    } else {
+        Config::default()
+    };
+    let bundle = crate::tls::write_ca_bundle_in(&home.join("ca"), &cfg.tld);
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        let minor = entry.file_name().to_string_lossy().to_string();
+        if !dir.join("bin/php").is_file() {
+            continue;
+        }
+        if let Some(own) = crate::php::own_ca_bundle_in(&dir) {
+            crate::tls::warn(&format!(
+                "PHP {minor}'s php.ini sets a CA bundle of its own ({own}), which Bird leaves \
+                 alone; add {} to it to call other sites over https",
+                home.join("ca/ca.pem").display()
+            ));
+        }
+        crate::php::write_managed_ini_in(&dir, &minor, &cfg, bundle.as_deref())?;
     }
     Ok(())
 }
@@ -324,6 +363,17 @@ mod tests {
         .unwrap();
         std::fs::create_dir_all(home.join("php/8.3/bin")).unwrap();
         std::fs::write(home.join("php/8.3/bin/php"), "").unwrap();
+        std::fs::write(
+            home.join("php/8.3/php.ini"),
+            "openssl.cafile = /etc/ssl/cert.pem\ncurl.cainfo = /etc/ssl/cert.pem\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(home.join("php/8.4/bin")).unwrap();
+        std::fs::write(home.join("php/8.4/bin/php"), "").unwrap();
+        std::fs::write(home.join("php/8.4/php.ini"), "curl.cainfo = /corp/ca.pem\n").unwrap();
+        let (ca, _) = crate::tls::generate_ca("test").unwrap();
+        std::fs::create_dir_all(home.join("ca")).unwrap();
+        std::fs::write(home.join("ca/ca.pem"), &ca).unwrap();
 
         let first = run_in(&home, MIGRATIONS).unwrap();
         assert_eq!(first.applied.len(), MIGRATIONS.len());
@@ -336,6 +386,22 @@ mod tests {
             "static-php"
         );
         assert_eq!(std::fs::read_dir(home.join("backups")).unwrap().count(), 1);
+        // PHP trusts Bird's CA: 8.3 through the bundle (its php.ini has the
+        // system bundle Bird used to set), 8.4 keeps the user's own.
+        let managed = |minor: &str| {
+            std::fs::read_to_string(home.join(format!("php/{minor}/conf.d/00-bird.ini"))).unwrap()
+        };
+        assert!(managed("8.3").contains("opcache.enable"));
+        assert!(!managed("8.4").contains("cainfo"));
+        if !crate::sys::is_root() && crate::tls::system_ca_bundle().is_some() {
+            let bundle = home.join("ca/ca-bundle.pem");
+            let line = format!("curl.cainfo = \"{}\"", bundle.display());
+            assert!(managed("8.3").contains(&line));
+            let trusted = std::fs::read(&bundle).unwrap();
+            let trusted = String::from_utf8_lossy(&trusted);
+            assert!(trusted.contains(ca.trim()), "Bird's CA is in the bundle");
+            assert!(trusted.matches("BEGIN CERTIFICATE").count() > 1);
+        }
 
         let second = run_in(&home, MIGRATIONS).unwrap();
         assert!(second.applied.is_empty(), "nothing runs twice");
